@@ -1,0 +1,36 @@
+{
+  "repository_url": "https://github.com/chen700564/RGB",
+  "commit": "65ec39e40e7dc9abb50e9bf1b4f32be3f6f16615",
+  "license": "CC BY-NC-SA 4.0",
+  "noncommercial": true,
+  "passage_num": 5,
+  "passage_seed": 2333,
+  "noise_rates": [0.0, 0.4, 0.8, 1.0],
+  "files": {
+    "zh_refine": {
+      "path": "data/zh_refine.json",
+      "sha256": "7a5c7547dcfa1b83429b53a41644453508f820f502d3817312cbf8051afb4563",
+      "records_count": 300
+    },
+    "zh_int": {
+      "path": "data/zh_int.json",
+      "sha256": "e2ddb0461e2130f4b006996a574a89d5898989ff8b15f51d900c17162c7d1b17",
+      "records_count": 100
+    },
+    "instruction": {
+      "path": "config/instruction.yaml",
+      "sha256": "0232a62c325544f7527d0c35bf672169f4ec14f04af722b22c2ea381070390e3",
+      "records_count": null
+    }
+  },
+  "zh_refine_ids": [
+    23, 35, 36, 99, 127, 158, 159, 168, 170, 198,
+    199, 206, 209, 212, 219, 220, 235, 245, 255, 264,
+    267, 268, 270, 279, 283, 291, 295, 296, 298, 299
+  ],
+  "zh_int_ids": [
+    8, 9, 24, 31, 42, 49, 51, 52, 53, 55,
+    58, 61, 63, 66, 67, 70, 72, 73, 74, 75,
+    78, 79, 80, 83, 84, 87, 88, 89, 90, 94
+  ]
+}

@@ -1,0 +1,31 @@
+[project]
+name = "rag-qa-s"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "argon2-cffi>=25.1.0,<26",
+    "chromadb>=1.0.0",
+    "fastapi>=0.141.0",
+    "httpx>=0.28.1",
+    "langchain-openai>=1.5.1",
+    "langchain-text-splitters>=1.0.0",
+    "langgraph>=1.2.2",
+    "langgraph-checkpoint-sqlite>=3.1.1",
+    "openai>=1.0.0",
+    "pydantic>=2.13.4",
+    "pydantic-settings>=2.10.1",
+    "pymupdf>=1.28.2",
+    "python-multipart>=0.0.20",
+    "rank-bm25>=0.2.2",
+    "uvicorn[standard]>=0.41.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.0",
+]
+eval = [
+    "ragas>=0.4.1,<0.5",
+]

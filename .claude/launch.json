@@ -1,0 +1,70 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "frontend-mock",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "frontend",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5173",
+        "--strictPort"
+      ],
+      "port": 5173
+    },
+    {
+      "name": "backend",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": [
+        "run",
+        "uvicorn",
+        "app.main:app",
+        "--port",
+        "8000"
+      ],
+      "port": 8000
+    },
+    {
+      "name": "frontend-live",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "frontend",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5174",
+        "--strictPort",
+        "--mode",
+        "live"
+      ],
+      "port": 5174
+    },
+    {
+      "name": "backend-e2e",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "AUTH_DB_PATH=frontend/.e2e/auth.sqlite3",
+        "CONVERSATION_DB_PATH=frontend/.e2e/conversations.sqlite3",
+        "KNOWLEDGE_BASE_DB_PATH=frontend/.e2e/kb.sqlite3",
+        "TRACE_DB_PATH=frontend/.e2e/traces.sqlite3",
+        "AGENT_CHECKPOINT_DB_PATH=frontend/.e2e/checkpoints.sqlite3",
+        "DOCS_PATH=frontend/.e2e/docs",
+        "CHROMA_PATH=frontend/.e2e/chroma",
+        "EVALUATION_RESULTS_PATH=frontend/.e2e/eval-results",
+        "uv",
+        "run",
+        "uvicorn",
+        "app.main:app",
+        "--port",
+        "8000"
+      ],
+      "port": 8000
+    }
+  ]
+}

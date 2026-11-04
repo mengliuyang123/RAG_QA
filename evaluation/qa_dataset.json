@@ -1,0 +1,386 @@
+[
+  {
+    "id": "local-001",
+    "question": "LangChain 的语义搜索知识库教程包含哪些主要步骤？",
+    "reference_answer": "主要步骤是创建 Document、加载并切分文档、生成嵌入、把文本块写入向量存储、按相似度查询，并可把检索结果交给 LLM 形成 RAG。",
+    "expected_sources": [{"filename": "langchain_knowledge_base.md", "page": null}],
+    "tags": ["definition", "single-document", "langchain"]
+  },
+  {
+    "id": "local-002",
+    "question": "LangChain 快速开始中，一个基本 Agent 由什么构成？",
+    "reference_answer": "基本 Agent 通过 create_agent 组合聊天模型、可调用工具和系统提示词，再使用消息调用 Agent。",
+    "expected_sources": [{"filename": "langchain_quickstart.md", "page": null}],
+    "tags": ["definition", "single-document", "langchain"]
+  },
+  {
+    "id": "local-003",
+    "question": "Retrieval 为什么能缓解大语言模型的有限上下文和静态知识问题？",
+    "reference_answer": "Retrieval 在查询时获取相关外部知识，使模型不必一次吞下全部语料，也能使用训练截止时间之后或特定领域的上下文。",
+    "expected_sources": [{"filename": "langchain_retrieval.md", "page": null}],
+    "tags": ["definition", "single-document", "langchain"]
+  },
+  {
+    "id": "local-004",
+    "question": "LangGraph Agentic RAG 与固定检索流程的核心区别是什么？",
+    "reference_answer": "Agentic RAG 让 Agent 根据当前问题决定是否调用检索工具，并可对检索结果评分、改写问题后再次检索，而不是固定只检索一次。",
+    "expected_sources": [{"filename": "langgraph_agentic_rag.md", "page": null}],
+    "tags": ["definition", "single-document", "langgraph"]
+  },
+  {
+    "id": "local-005",
+    "question": "LangGraph persistence 中 checkpointer 和 store 分别负责什么？",
+    "reference_answer": "Checkpointer 保存线程范围的图状态和检查点，用于短期记忆、恢复和时间旅行；store 保存图状态之外、可跨线程使用的长期数据。",
+    "expected_sources": [{"filename": "langgraph_persistence.md", "page": null}],
+    "tags": ["definition", "single-document", "langgraph"]
+  },
+  {
+    "id": "local-006",
+    "question": "LangGraph 快速开始中的 Graph API 用哪些基本元素构建计算器 Agent？",
+    "reference_answer": "它定义工具和模型、共享状态、模型节点与工具节点，再用普通边和条件边连接节点，最后编译并调用图。",
+    "expected_sources": [{"filename": "langgraph_quickstart.md", "page": null}],
+    "tags": ["definition", "single-document", "langgraph"]
+  },
+  {
+    "id": "local-007",
+    "question": "LangChain 文档如何区分 Agent、模型循环和 harness？",
+    "reference_answer": "Agent 是模型反复调用工具直到任务完成的循环；harness 是包围该循环并提供提示词、工具和中间件等上下文控制的部分。",
+    "expected_sources": [{"filename": "langchain_agents.md", "page": null}],
+    "tags": ["definition", "single-document", "langchain"]
+  },
+  {
+    "id": "local-008",
+    "question": "LangChain structured output 的作用是什么，结果保存在哪里？",
+    "reference_answer": "它让 Agent 返回由 schema 校验的 JSON、Pydantic 模型或 dataclass 等结构化数据，最终结果保存在 Agent 状态的 structured_response 键中。",
+    "expected_sources": [{"filename": "langchain_structured_output.md", "page": null}],
+    "tags": ["definition", "single-document", "langchain"]
+  },
+  {
+    "id": "local-009",
+    "question": "LangChain streaming 主要解决什么用户体验问题？",
+    "reference_answer": "Streaming 在完整结果生成前逐步展示 Agent 进度、模型 token 或自定义更新，从而降低用户感知等待时间并提升应用响应性。",
+    "expected_sources": [{"filename": "langchain_streaming.md", "page": null}],
+    "tags": ["definition", "single-document", "langchain"]
+  },
+  {
+    "id": "local-010",
+    "question": "LangChain Agent 的短期记忆保存什么范围的信息？",
+    "reference_answer": "短期记忆保存同一线程或会话中的消息历史与自定义状态，并通过 checkpointer 持久化，使 Agent 能在后续调用中继续该线程上下文。",
+    "expected_sources": [{"filename": "langchain_short_term_memory.md", "page": null}],
+    "tags": ["definition", "single-document", "langchain"]
+  },
+  {
+    "id": "local-011",
+    "question": "为什么复杂 Agent 系统会采用 multi-agent 架构？",
+    "reference_answer": "单个 Agent 工具过多或上下文过长时会难以决策并降低性能；multi-agent 通过上下文隔离、并行执行和团队分工来管理复杂任务。",
+    "expected_sources": [{"filename": "langchain_multi_agent.md", "page": null}],
+    "tags": ["definition", "single-document", "langchain"]
+  },
+  {
+    "id": "local-012",
+    "question": "LangGraph Graph API 中 State、Nodes 和 Edges 各表示什么？",
+    "reference_answer": "State 是图共享的数据结构，Nodes 是读取状态并执行工作、返回更新的函数，Edges 决定接下来执行哪个节点。",
+    "expected_sources": [{"filename": "langgraph_graph_api.md", "page": null}],
+    "tags": ["definition", "single-document", "langgraph"]
+  },
+  {
+    "id": "local-013",
+    "question": "LangGraph stream-mode API 可以暴露哪些类型的运行事件？",
+    "reference_answer": "它可通过 updates、values、messages、custom、checkpoints、tasks 和 debug 等模式暴露状态变化、LLM token、自定义数据及运行时事件。",
+    "expected_sources": [{"filename": "langgraph_streaming.md", "page": null}],
+    "tags": ["definition", "single-document", "langgraph"]
+  },
+  {
+    "id": "local-014",
+    "question": "LangGraph interrupt 的用途和恢复方式是什么？",
+    "reference_answer": "interrupt 会在节点内动态暂停图并通过 checkpointer 保存状态，等待外部输入；恢复时用相同 thread_id 再次调用图，并传入 Command(resume=...)。",
+    "expected_sources": [{"filename": "langgraph_interrupts.md", "page": null}],
+    "tags": ["definition", "single-document", "langgraph"]
+  },
+  {
+    "id": "local-015",
+    "question": "一个可部署的 LangGraph 应用包含哪些核心组成？",
+    "reference_answer": "它包含一个或多个图、langgraph.json 配置文件、声明依赖的文件，以及可选的环境变量文件或部署环境变量配置。",
+    "expected_sources": [{"filename": "langgraph_application_structure.md", "page": null}],
+    "tags": ["definition", "single-document", "langgraph"]
+  },
+  {
+    "id": "local-016",
+    "question": "LangChain 语义搜索教程为什么要先切分长文档再生成嵌入？",
+    "reference_answer": "切分让每个片段能单独被检索并适配模型上下文窗口，随后为片段生成嵌入，才能在向量空间中按语义相似度查找相关内容。",
+    "expected_sources": [{"filename": "langchain_knowledge_base.md", "page": null}],
+    "tags": ["procedure", "single-document", "langchain"]
+  },
+  {
+    "id": "local-017",
+    "question": "在 LangChain 快速开始中，怎样把普通 Python 函数提供给 Agent 使用？",
+    "reference_answer": "先把带有清晰名称、类型注解和说明的 Python 函数定义为工具，再把该工具放入 create_agent 的 tools 参数。",
+    "expected_sources": [{"filename": "langchain_quickstart.md", "page": null}],
+    "tags": ["procedure", "single-document", "langchain"]
+  },
+  {
+    "id": "local-018",
+    "question": "已有 SQL 或 CRM 知识库时，LangChain retrieval 文档建议如何接入 RAG？",
+    "reference_answer": "无需重建知识库；可以把它作为 Agentic RAG 的工具，或者先查询它并把返回内容作为 2-Step RAG 的模型上下文。",
+    "expected_sources": [{"filename": "langchain_retrieval.md", "page": null}],
+    "tags": ["procedure", "single-document", "langchain"]
+  },
+  {
+    "id": "local-019",
+    "question": "LangGraph Agentic RAG 如何处理低相关性的检索结果？",
+    "reference_answer": "图会对检索文档评分；如果相关性不足，就改写原问题以改善检索，再返回检索步骤，而不是直接生成答案。",
+    "expected_sources": [{"filename": "langgraph_agentic_rag.md", "page": null}],
+    "tags": ["procedure", "single-document", "langgraph"]
+  },
+  {
+    "id": "local-020",
+    "question": "要让 LangGraph 状态在进程重启后仍可恢复，应怎样选择 checkpointer？",
+    "reference_answer": "生产环境应使用由数据库支持的持久化 checkpointer，而不是只存在内存中的 MemorySaver，并通过 thread_id 定位线程状态。",
+    "expected_sources": [{"filename": "langgraph_persistence.md", "page": null}],
+    "tags": ["configuration", "single-document", "langgraph"]
+  },
+  {
+    "id": "local-021",
+    "question": "LangGraph 计算器 Agent 如何决定调用工具还是结束？",
+    "reference_answer": "模型节点生成消息后，条件边检查最后一条消息是否包含工具调用；有工具调用就路由到工具节点，否则路由到 END。",
+    "expected_sources": [{"filename": "langgraph_quickstart.md", "page": null}],
+    "tags": ["procedure", "single-document", "langgraph"]
+  },
+  {
+    "id": "local-022",
+    "question": "LangChain Agent 如何配置模型、工具、系统提示词和结构化输出？",
+    "reference_answer": "模型可传 provider:model 标识或模型实例，工具通过 tools 提供，系统提示词通过 system_prompt 设置，结构化结果通过 response_format 配置。",
+    "expected_sources": [{"filename": "langchain_agents.md", "page": null}],
+    "tags": ["configuration", "single-document", "langchain"]
+  },
+  {
+    "id": "local-023",
+    "question": "LangChain 结构化输出何时使用 ProviderStrategy，何时使用 ToolStrategy？",
+    "reference_answer": "模型提供方原生支持结构化输出时优先用 ProviderStrategy；其他模型用 ToolStrategy 通过工具调用生成结构化数据，也可以显式选择策略。",
+    "expected_sources": [{"filename": "langchain_structured_output.md", "page": null}],
+    "tags": ["configuration", "single-document", "langchain"]
+  },
+  {
+    "id": "local-024",
+    "question": "怎样在一次 LangChain Agent 调用中同时接收多种 stream mode？",
+    "reference_answer": "调用 stream 时传入多个模式，并按返回的模式或 v2 统一事件类型区分 updates、messages、custom 等数据。",
+    "expected_sources": [{"filename": "langchain_streaming.md", "page": null}],
+    "tags": ["configuration", "single-document", "langchain"]
+  },
+  {
+    "id": "local-025",
+    "question": "对话历史过长时，LangChain short-term memory 提供哪些常见处理方式？",
+    "reference_answer": "可以在调用模型前裁剪旧消息、删除指定消息，或把较早对话总结后用摘要替换，从而控制上下文长度。",
+    "expected_sources": [{"filename": "langchain_short_term_memory.md", "page": null}],
+    "tags": ["procedure", "single-document", "langchain"]
+  },
+  {
+    "id": "local-026",
+    "question": "选择 multi-agent 模式时应重点考虑哪些因素？",
+    "reference_answer": "应考虑子 Agent 是否需要直接与用户交互、任务能否并行、共享多少上下文、由谁负责路由，以及一次性请求还是重复多轮请求。",
+    "expected_sources": [{"filename": "langchain_multi_agent.md", "page": null}],
+    "tags": ["configuration", "single-document", "langchain"]
+  },
+  {
+    "id": "local-027",
+    "question": "LangGraph State 中 reducer 的作用是什么？",
+    "reference_answer": "Reducer 定义节点返回更新时如何合并某个状态字段；没有 reducer 时通常覆盖旧值，有 reducer 时可追加消息或执行自定义聚合。",
+    "expected_sources": [{"filename": "langgraph_graph_api.md", "page": null}],
+    "tags": ["configuration", "single-document", "langgraph"]
+  },
+  {
+    "id": "local-028",
+    "question": "LangGraph 中如何同时流式接收节点更新和自定义进度？",
+    "reference_answer": "调用 graph.stream 或 astream，传入 stream_mode=[\"updates\", \"custom\"]；节点通过 stream writer 发出 custom 数据，调用方按事件 type 处理。",
+    "expected_sources": [{"filename": "langgraph_streaming.md", "page": null}],
+    "tags": ["configuration", "single-document", "langgraph"]
+  },
+  {
+    "id": "local-029",
+    "question": "恢复 LangGraph interrupt 时为什么必须复用原来的 thread_id？",
+    "reference_answer": "thread_id 是 checkpointer 找回已保存状态的持久游标；复用它会恢复同一检查点，换一个值则会启动没有旧状态的新线程。",
+    "expected_sources": [{"filename": "langgraph_interrupts.md", "page": null}],
+    "tags": ["procedure", "single-document", "langgraph"]
+  },
+  {
+    "id": "local-030",
+    "question": "langgraph.json 中通常要声明哪些部署信息？",
+    "reference_answer": "它声明依赖、可加载的图及其模块路径，以及环境变量文件或环境变量配置；每个图用唯一名称映射到编译图或构造函数。",
+    "expected_sources": [{"filename": "langgraph_application_structure.md", "page": null}],
+    "tags": ["configuration", "single-document", "langgraph"]
+  },
+  {
+    "id": "local-031",
+    "question": "LangChain 的 vector store 和 retriever 在语义搜索中分别承担什么职责？",
+    "reference_answer": "Vector store 保存并搜索文本嵌入；retriever 提供统一接口，根据非结构化查询返回相关 Document，可隐藏具体向量存储实现。",
+    "expected_sources": [{"filename": "langchain_knowledge_base.md", "page": null}],
+    "tags": ["definition", "single-document", "langchain"]
+  },
+  {
+    "id": "local-032",
+    "question": "LangChain 快速开始为什么强调为工具编写清晰文档字符串？",
+    "reference_answer": "工具名称和说明会帮助模型理解工具用途、参数和何时调用；描述不清会降低 Agent 选择和使用工具的可靠性。",
+    "expected_sources": [{"filename": "langchain_quickstart.md", "page": null}],
+    "tags": ["procedure", "single-document", "langchain"]
+  },
+  {
+    "id": "local-033",
+    "question": "2-Step RAG、Agentic RAG 和 Hybrid RAG 在控制、灵活性和延迟上有何区别？",
+    "reference_answer": "2-Step RAG 控制高、流程可预测且延迟较低但灵活性低；Agentic RAG 由 Agent 决定检索，灵活性高但控制和延迟可预测性较低；Hybrid 通过验证步骤折中两者。",
+    "expected_sources": [{"filename": "langchain_retrieval.md", "page": null}],
+    "tags": ["comparison", "single-document", "langchain"]
+  },
+  {
+    "id": "local-034",
+    "question": "LangGraph Agentic RAG 图中的文档评分节点如何影响后续路径？",
+    "reference_answer": "评分结果决定直接进入答案生成，还是先进入问题改写并重新检索，因此它是检索质量控制的条件路由依据。",
+    "expected_sources": [{"filename": "langgraph_agentic_rag.md", "page": null}],
+    "tags": ["procedure", "single-document", "langgraph"]
+  },
+  {
+    "id": "local-035",
+    "question": "为什么 MemorySaver 不适合需要跨重启恢复的 LangGraph 生产应用？",
+    "reference_answer": "MemorySaver 的检查点只保存在当前进程内存中，进程结束就丢失；跨重启恢复需要数据库支持的持久化 saver。",
+    "expected_sources": [{"filename": "langgraph_persistence.md", "page": null}],
+    "tags": ["configuration", "single-document", "langgraph"]
+  },
+  {
+    "id": "local-036",
+    "question": "LangGraph 快速开始中，模型节点和工具节点如何形成循环？",
+    "reference_answer": "模型节点可能产生工具调用，条件边把执行路由到工具节点；工具结果作为消息写回状态后再回到模型节点，直到模型不再调用工具。",
+    "expected_sources": [{"filename": "langgraph_quickstart.md", "page": null}],
+    "tags": ["procedure", "single-document", "langgraph"]
+  },
+  {
+    "id": "local-037",
+    "question": "LangChain Agent 的 middleware 可以改变哪些 harness 行为？",
+    "reference_answer": "Middleware 可参与上下文管理、规划与委派、故障恢复、护栏和 steering，并能在模型调用前后读取或更新 Agent 状态。",
+    "expected_sources": [{"filename": "langchain_agents.md", "page": null}],
+    "tags": ["definition", "single-document", "langchain"]
+  },
+  {
+    "id": "local-038",
+    "question": "直接把一个 schema 类型传给 LangChain response_format 时会怎样选择策略？",
+    "reference_answer": "LangChain 会根据模型能力自动选择：提供方支持原生结构化输出时使用 ProviderStrategy，否则使用 ToolStrategy；JSON Schema 字典需要显式包装策略。",
+    "expected_sources": [{"filename": "langchain_structured_output.md", "page": null}],
+    "tags": ["configuration", "single-document", "langchain"]
+  },
+  {
+    "id": "local-039",
+    "question": "LangChain streaming 中 agent progress 与 LLM token 流有什么区别？",
+    "reference_answer": "Agent progress 报告节点步骤或状态更新，适合展示执行进展；LLM token 流逐个传递模型生成内容，适合实时显示回答文本。",
+    "expected_sources": [{"filename": "langchain_streaming.md", "page": null}],
+    "tags": ["comparison", "single-document", "langchain"]
+  },
+  {
+    "id": "local-040",
+    "question": "LangChain short-term memory 为什么允许在 before_model 阶段裁剪消息？",
+    "reference_answer": "因为完整线程历史可能超过模型上下文窗口，在调用模型前裁剪或总结能控制输入长度，同时 checkpointer 仍可保存线程状态。",
+    "expected_sources": [{"filename": "langchain_short_term_memory.md", "page": null}],
+    "tags": ["procedure", "single-document", "langchain"]
+  },
+  {
+    "id": "local-041",
+    "question": "LangChain short-term memory 与 LangGraph persistence 的 checkpointer 有什么关系？",
+    "reference_answer": "LangChain Agent 的线程短期记忆依靠 checkpointer 保存状态；LangGraph persistence 定义的 checkpointer 正是保存线程图状态和检查点、支持恢复的机制。",
+    "expected_sources": [
+      {"filename": "langchain_short_term_memory.md", "page": null},
+      {"filename": "langgraph_persistence.md", "page": null}
+    ],
+    "tags": ["comparison", "multi-document", "langchain", "langgraph"]
+  },
+  {
+    "id": "local-042",
+    "question": "LangChain streaming 与 LangGraph streaming 的关注层次有何不同？",
+    "reference_answer": "LangChain streaming 面向 Agent 应用的进度、模型 token 和自定义更新；LangGraph streaming 更贴近图运行时，可流出状态、节点任务、检查点、调试信息和子图事件。",
+    "expected_sources": [
+      {"filename": "langchain_streaming.md", "page": null},
+      {"filename": "langgraph_streaming.md", "page": null}
+    ],
+    "tags": ["comparison", "multi-document", "langchain", "langgraph"]
+  },
+  {
+    "id": "local-043",
+    "question": "单个 LangChain Agent 与 multi-agent 系统在上下文和工具管理上有何差别？",
+    "reference_answer": "单个 Agent 在一个 harness 中管理全部工具和上下文；multi-agent 把专业工具与上下文分给多个 Agent，再通过路由、委派或 handoff 协作，以减少单个模型的认知负担。",
+    "expected_sources": [
+      {"filename": "langchain_agents.md", "page": null},
+      {"filename": "langchain_multi_agent.md", "page": null}
+    ],
+    "tags": ["comparison", "multi-document", "langchain"]
+  },
+  {
+    "id": "local-044",
+    "question": "LangGraph 快速开始如何具体使用 Graph API 的 State、Node 和 Edge 概念？",
+    "reference_answer": "快速开始用消息状态保存对话，把模型调用和工具执行写成节点，再用普通边和条件边连接 START、模型、工具与 END，最终编译 StateGraph。",
+    "expected_sources": [
+      {"filename": "langgraph_quickstart.md", "page": null},
+      {"filename": "langgraph_graph_api.md", "page": null}
+    ],
+    "tags": ["synthesis", "multi-document", "langgraph"]
+  },
+  {
+    "id": "local-045",
+    "question": "2-Step RAG 与 LangGraph Agentic RAG 的检索决策流程有何差别？",
+    "reference_answer": "2-Step RAG 总是在生成前执行一次固定检索；LangGraph Agentic RAG 由模型决定是否检索，并能根据文档评分改写问题、循环检索后再回答。",
+    "expected_sources": [
+      {"filename": "langchain_retrieval.md", "page": null},
+      {"filename": "langgraph_agentic_rag.md", "page": null}
+    ],
+    "tags": ["comparison", "multi-document", "langchain", "langgraph"]
+  },
+  {
+    "id": "local-046",
+    "question": "从原始文档到可自主检索的 RAG Agent，需要组合哪些能力？",
+    "reference_answer": "先用 loader、splitter、embedding 和 vector store 建立可检索知识库，再提供 retriever 接口；若需要自主决策，则把检索包装为工具交给 Agent，并加入文档评分、问题改写和生成路径。",
+    "expected_sources": [
+      {"filename": "langchain_knowledge_base.md", "page": null},
+      {"filename": "langchain_retrieval.md", "page": null},
+      {"filename": "langgraph_agentic_rag.md", "page": null}
+    ],
+    "tags": ["synthesis", "multi-document", "langchain", "langgraph"]
+  },
+  {
+    "id": "local-047",
+    "question": "如何让一个 LangChain Agent 同时拥有可扩展状态、线程短期记忆和跨线程长期数据？",
+    "reference_answer": "通过 AgentState 扩展自定义字段，用 checkpointer 保存每个 thread_id 的消息与图状态实现短期记忆，再用 LangGraph store 保存图状态之外、可跨线程读取的长期数据。",
+    "expected_sources": [
+      {"filename": "langchain_agents.md", "page": null},
+      {"filename": "langchain_short_term_memory.md", "page": null},
+      {"filename": "langgraph_persistence.md", "page": null}
+    ],
+    "tags": ["synthesis", "multi-document", "langchain", "langgraph"]
+  },
+  {
+    "id": "local-048",
+    "question": "要在 Agent 应用中同时展示回答 token、节点进度和人工中断，应怎样组合流式能力？",
+    "reference_answer": "使用 LangChain 的 messages 或 token 流展示模型输出，用 updates/custom 或 LangGraph stream modes 展示节点状态与自定义进度；图触发 interrupt 时通过同一流暴露中断信息，并以相同 thread_id 恢复。",
+    "expected_sources": [
+      {"filename": "langchain_streaming.md", "page": null},
+      {"filename": "langgraph_streaming.md", "page": null},
+      {"filename": "langgraph_interrupts.md", "page": null}
+    ],
+    "tags": ["synthesis", "multi-document", "langchain", "langgraph"]
+  },
+  {
+    "id": "local-049",
+    "question": "在 multi-agent 系统中怎样获得可靠的结构化最终结果？",
+    "reference_answer": "先由路由或 supervisor 把子任务交给专业 Agent 并控制各自上下文，再在负责汇总的 Agent 上配置 response_format；原生支持时用 ProviderStrategy，否则用 ToolStrategy，并读取 structured_response。",
+    "expected_sources": [
+      {"filename": "langchain_multi_agent.md", "page": null},
+      {"filename": "langchain_structured_output.md", "page": null}
+    ],
+    "tags": ["synthesis", "multi-document", "langchain"]
+  },
+  {
+    "id": "local-050",
+    "question": "部署一个需要人工审批且可恢复的 LangGraph 应用，需要哪些结构和持久化配置？",
+    "reference_answer": "应用需要图代码、依赖声明和 langgraph.json；图应配置持久化 checkpointer，用 thread_id 定位状态，在审批节点调用 interrupt，并用相同 thread_id 与 Command(resume=...) 恢复。生产环境变量应由部署环境安全提供。",
+    "expected_sources": [
+      {"filename": "langgraph_application_structure.md", "page": null},
+      {"filename": "langgraph_interrupts.md", "page": null},
+      {"filename": "langgraph_persistence.md", "page": null}
+    ],
+    "tags": ["synthesis", "multi-document", "langgraph"]
+  }
+]

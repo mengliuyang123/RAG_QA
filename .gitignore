@@ -1,0 +1,32 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.pytest_cache/
+
+# Virtual environments
+.venv/
+
+# Local configuration and IDE files
+.env
+.env.*
+!.env.example
+.idea/
+
+# Locally generated vector-store data
+data/chroma/
+data/evaluation/chroma/
+data/docs/
+data/conversations/
+data/knowledge/
+data/traces/
+data/auth/
+
+# Evaluation, cache, repair, and per-run artifacts
+data/repair/
+evaluation/cache/
+evaluation/work/
+evaluation/results/runs/

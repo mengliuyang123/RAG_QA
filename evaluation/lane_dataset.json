@@ -1,0 +1,117 @@
+{
+  "version": "lanes-v1",
+  "smoke_ids": ["persistence", "checkpoint_store", "followup", "greeting"],
+  "episodes": [
+    {
+      "id": "persistence",
+      "tags": ["single_hop"],
+      "turns": [{
+        "question": "LangGraph 的 MemorySaver 在进程重启后能保留 checkpoint 吗？本地开发应该用什么替代？",
+        "reference": "MemorySaver/InMemorySaver 将 checkpoint 保存在 RAM，重启会丢失；本地开发可使用文件持久化的 SqliteSaver。",
+        "expected_lane": "fast",
+        "expected_sources": ["langgraph_persistence.md"]
+      }]
+    },
+    {
+      "id": "checkpoint_store",
+      "tags": ["comparison"],
+      "turns": [{
+        "question": "对比 LangGraph checkpointer 和 store：各保存什么，作用域是什么，分别适合什么用途？",
+        "reference": "Checkpointer 保存单个 thread 的图状态快照，用于短期会话连续性、人工中断、时间旅行与故障恢复。Store 保存图状态之外的应用键值数据，跨 thread 保存用户偏好、事实与共享知识。两者可以同时使用。",
+        "expected_lane": "agent",
+        "expected_sources": ["langgraph_persistence.md"]
+      }]
+    },
+    {
+      "id": "followup",
+      "tags": ["multi_turn", "coreference"],
+      "turns": [
+        {
+          "question": "LangGraph 的 InMemorySaver 将 checkpoint 保存在哪里？",
+          "reference": "保存在 RAM 内存中。",
+          "expected_lane": "fast",
+          "expected_sources": ["langgraph_persistence.md"]
+        },
+        {
+          "question": "那它在进程重启后还在吗？本地开发怎么替换？",
+          "reference": "这里的它指 InMemorySaver 保存的 checkpoint；重启后会丢失，本地开发可改用文件持久化的 SqliteSaver。",
+          "expected_lane": "fast",
+          "expected_sources": ["langgraph_persistence.md"],
+          "rewrite_terms": ["InMemorySaver"]
+        }
+      ]
+    },
+    {
+      "id": "greeting",
+      "tags": ["chitchat"],
+      "turns": [{
+        "question": "你好",
+        "reference": "礼貌回应问候，不需要声称查询了知识库。",
+        "expected_lane": "direct",
+        "requires_retrieval": false
+      }]
+    },
+    {
+      "id": "interrupt_recovery",
+      "tags": ["multi_hop"],
+      "turns": [{
+        "question": "LangGraph 的 interrupt 如何暂停并恢复图？如果使用 InMemorySaver 时进程重启了，为何无法依靠原 checkpoint 恢复，应该如何持久化？",
+        "reference": "interrupt 保存图状态并等待外部输入，使用原 thread_id 和 Command(resume=...) 恢复。InMemorySaver 仅保存在 RAM，重启会丢失状态；应使用持久化 checkpointer，例如本地 SqliteSaver 或生产 PostgresSaver。",
+        "expected_lane": "agent",
+        "expected_sources": ["langgraph_interrupts.md", "langgraph_persistence.md"]
+      }]
+    },
+    {
+      "id": "memory_summary",
+      "tags": ["aggregation"],
+      "turns": [{
+        "question": "汇总 LangGraph 的两种互补持久化系统、它们各自的记忆范围，以及 MemorySaver 重启丢状态的替代方案。",
+        "reference": "Checkpointer 提供单 thread 图状态快照和短期记忆；Store 提供跨 thread 的应用数据和长期记忆。MemorySaver 在 RAM 中，重启丢状态；本地可用 SqliteSaver，生产可用 PostgresSaver。",
+        "expected_lane": "agent",
+        "expected_sources": ["langgraph_persistence.md"]
+      }]
+    },
+    {
+      "id": "clarify_object",
+      "tags": ["clarification"],
+      "turns": [{
+        "question": "这个怎么配置？",
+        "reference": "没有前文也没有指明对象，应先询问要配置什么组件或功能。",
+        "expected_lane": "clarify",
+        "expected_outcome": "clarification",
+        "requires_retrieval": false
+      }]
+    },
+    {
+      "id": "retry_evidence_gap",
+      "tags": ["multi_hop", "retry"],
+      "top_k": 1,
+      "turns": [{
+        "question": "LangGraph 中断恢复时 thread_id 有什么作用，MemorySaver 重启后是否仍能提供状态，如何同时解决这两个要求？",
+        "reference": "thread_id 指向保存的图状态，恢复要复用同一 thread_id。MemorySaver 在进程重启后丢失 RAM 中的 checkpoint，因此需改用持久化 checkpointer，并在恢复调用中复用原 thread_id。",
+        "expected_lane": "agent",
+        "expected_sources": ["langgraph_interrupts.md", "langgraph_persistence.md"]
+      }]
+    },
+    {
+      "id": "unknown_private_fact",
+      "tags": ["refusal"],
+      "turns": [{
+        "question": "本知识库维护者2026年10月的个人工资到账金额是多少？请给出确切数字。",
+        "reference": "固定的 LangChain/LangGraph 技术文档没有个人工资或到账记录，应拒绝编造并说明缺少工资记录。",
+        "expected_lane": "fast",
+        "expected_outcome": "refused"
+      }]
+    },
+    {
+      "id": "capabilities",
+      "tags": ["meta"],
+      "turns": [{
+        "question": "你能做什么",
+        "reference": "说明系统可以回答知识库问题或协助查找资料，不虚构已执行检索。",
+        "expected_lane": "direct",
+        "requires_retrieval": false
+      }]
+    }
+  ]
+}

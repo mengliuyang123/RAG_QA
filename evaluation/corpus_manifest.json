@@ -1,0 +1,154 @@
+{
+  "documents": [
+    {
+      "filename": "langchain_knowledge_base.md",
+      "title": "LangChain 知识库与检索",
+      "source_url": "https://github.com/langchain-ai/docs",
+      "source_revision": "c437d1a899855813f9b9a78058f378f902d4a303",
+      "source_path": "data/sample_rag/documents/langchain_knowledge_base.md",
+      "source_sha256": "ede5d35273ad5d6c5748e4b193e59a7039a7430ccdd3877680e0a2cc37e746b3",
+      "license": "MIT",
+      "sha256": "ede5d35273ad5d6c5748e4b193e59a7039a7430ccdd3877680e0a2cc37e746b3"
+    },
+    {
+      "filename": "langchain_quickstart.md",
+      "title": "LangChain 快速开始",
+      "source_url": "https://github.com/langchain-ai/docs",
+      "source_revision": "c437d1a899855813f9b9a78058f378f902d4a303",
+      "source_path": "data/sample_rag/documents/langchain_quickstart.md",
+      "source_sha256": "1d56312d53d6f144232741f27da1ff1a72285daf067bfedd1da08353cc461974",
+      "license": "MIT",
+      "sha256": "1d56312d53d6f144232741f27da1ff1a72285daf067bfedd1da08353cc461974"
+    },
+    {
+      "filename": "langchain_retrieval.md",
+      "title": "LangChain Retrieval",
+      "source_url": "https://github.com/langchain-ai/docs",
+      "source_revision": "e6a66534c2655283f5d799e33e93ace48b4b27b8",
+      "source_path": "src/oss/deepagents/retrieval.mdx",
+      "source_sha256": "7ded543a172f7c2924cf1270f6875d6abcdf4fb5e5474fd22c85b77f2b864bde",
+      "license": "MIT",
+      "sha256": "7ded543a172f7c2924cf1270f6875d6abcdf4fb5e5474fd22c85b77f2b864bde"
+    },
+    {
+      "filename": "langgraph_agentic_rag.md",
+      "title": "LangGraph Agentic RAG",
+      "source_url": "https://github.com/langchain-ai/docs",
+      "source_revision": "c437d1a899855813f9b9a78058f378f902d4a303",
+      "source_path": "data/sample_rag/documents/langgraph_agentic_rag.md",
+      "source_sha256": "dcb2e097f480416bc0b429f6108b9daf51f921b985b94fb50e2732c0f4b27ce8",
+      "license": "MIT",
+      "sha256": "dcb2e097f480416bc0b429f6108b9daf51f921b985b94fb50e2732c0f4b27ce8"
+    },
+    {
+      "filename": "langgraph_persistence.md",
+      "title": "LangGraph 持久化与记忆",
+      "source_url": "https://github.com/langchain-ai/docs",
+      "source_revision": "c437d1a899855813f9b9a78058f378f902d4a303",
+      "source_path": "data/sample_rag/documents/langgraph_persistence.md",
+      "source_sha256": "f4383aee0ff49c1e81ad4a821703b06692e81ca451ee306e1092c716d00984a8",
+      "license": "MIT",
+      "sha256": "f4383aee0ff49c1e81ad4a821703b06692e81ca451ee306e1092c716d00984a8"
+    },
+    {
+      "filename": "langgraph_quickstart.md",
+      "title": "LangGraph 快速开始",
+      "source_url": "https://github.com/langchain-ai/docs",
+      "source_revision": "c437d1a899855813f9b9a78058f378f902d4a303",
+      "source_path": "data/sample_rag/documents/langgraph_quickstart.md",
+      "source_sha256": "4ddf953dcf0af9c80393d595d09d12d99b5046adea021dd3617abd071d11cc7c",
+      "license": "MIT",
+      "sha256": "4ddf953dcf0af9c80393d595d09d12d99b5046adea021dd3617abd071d11cc7c"
+    },
+    {
+      "filename": "langchain_agents.md",
+      "title": "LangChain Agents",
+      "source_url": "https://github.com/langchain-ai/docs",
+      "source_revision": "e6a66534c2655283f5d799e33e93ace48b4b27b8",
+      "source_path": "src/oss/langchain/agents.mdx",
+      "source_sha256": "aedee326f6aa5a1f1301608d70c4ae71523ddb82f50515ae271ca8e6aef47c24",
+      "license": "MIT",
+      "sha256": "aedee326f6aa5a1f1301608d70c4ae71523ddb82f50515ae271ca8e6aef47c24"
+    },
+    {
+      "filename": "langchain_structured_output.md",
+      "title": "LangChain Structured Output",
+      "source_url": "https://github.com/langchain-ai/docs",
+      "source_revision": "e6a66534c2655283f5d799e33e93ace48b4b27b8",
+      "source_path": "src/oss/langchain/structured-output.mdx",
+      "source_sha256": "be97ee0e8cd92f29e356f17d6fabcd9272d8ce68af3540cd1b4cbe1913de36d4",
+      "license": "MIT",
+      "sha256": "be97ee0e8cd92f29e356f17d6fabcd9272d8ce68af3540cd1b4cbe1913de36d4"
+    },
+    {
+      "filename": "langchain_streaming.md",
+      "title": "LangChain Streaming",
+      "source_url": "https://github.com/langchain-ai/docs",
+      "source_revision": "e6a66534c2655283f5d799e33e93ace48b4b27b8",
+      "source_path": "src/oss/langchain/streaming.mdx",
+      "source_sha256": "00d05a410874bebba37bbc0012401080a08853ba85160ac7c2747344495f7b8d",
+      "license": "MIT",
+      "sha256": "00d05a410874bebba37bbc0012401080a08853ba85160ac7c2747344495f7b8d"
+    },
+    {
+      "filename": "langchain_short_term_memory.md",
+      "title": "LangChain Short-term Memory",
+      "source_url": "https://github.com/langchain-ai/docs",
+      "source_revision": "e6a66534c2655283f5d799e33e93ace48b4b27b8",
+      "source_path": "src/oss/langchain/short-term-memory.mdx",
+      "source_sha256": "be25826fca439195f4e47315bbc21e6685f319da9eedddcffe37a1fd06c49d09",
+      "license": "MIT",
+      "sha256": "be25826fca439195f4e47315bbc21e6685f319da9eedddcffe37a1fd06c49d09"
+    },
+    {
+      "filename": "langchain_multi_agent.md",
+      "title": "LangChain Multi-agent",
+      "source_url": "https://github.com/langchain-ai/docs",
+      "source_revision": "e6a66534c2655283f5d799e33e93ace48b4b27b8",
+      "source_path": "src/oss/langchain/multi-agent/index.mdx",
+      "source_sha256": "fd52d4fd76e8b25200b761f893361639324ed85378a0ab7b600c67b8959162c2",
+      "license": "MIT",
+      "sha256": "fd52d4fd76e8b25200b761f893361639324ed85378a0ab7b600c67b8959162c2"
+    },
+    {
+      "filename": "langgraph_graph_api.md",
+      "title": "LangGraph Graph API",
+      "source_url": "https://github.com/langchain-ai/docs",
+      "source_revision": "e6a66534c2655283f5d799e33e93ace48b4b27b8",
+      "source_path": "src/oss/langgraph/graph-api.mdx",
+      "source_sha256": "2a69915e9ac1670fbafd151d49a99237eb804d7dca8edf0fe2e4cc1de8f5be46",
+      "license": "MIT",
+      "sha256": "2a69915e9ac1670fbafd151d49a99237eb804d7dca8edf0fe2e4cc1de8f5be46"
+    },
+    {
+      "filename": "langgraph_streaming.md",
+      "title": "LangGraph Streaming",
+      "source_url": "https://github.com/langchain-ai/docs",
+      "source_revision": "e6a66534c2655283f5d799e33e93ace48b4b27b8",
+      "source_path": "src/oss/langgraph/streaming.mdx",
+      "source_sha256": "05b7c43d3649c50204346c367c0f04833ff913914bfbc87b958516a4a676b6f6",
+      "license": "MIT",
+      "sha256": "05b7c43d3649c50204346c367c0f04833ff913914bfbc87b958516a4a676b6f6"
+    },
+    {
+      "filename": "langgraph_interrupts.md",
+      "title": "LangGraph Interrupts",
+      "source_url": "https://github.com/langchain-ai/docs",
+      "source_revision": "e6a66534c2655283f5d799e33e93ace48b4b27b8",
+      "source_path": "src/oss/langgraph/interrupts.mdx",
+      "source_sha256": "2601d097c535c54a4cf4f2bf59088452d6a9eb8f4bea0c10e4caa2a47fc95702",
+      "license": "MIT",
+      "sha256": "2601d097c535c54a4cf4f2bf59088452d6a9eb8f4bea0c10e4caa2a47fc95702"
+    },
+    {
+      "filename": "langgraph_application_structure.md",
+      "title": "LangGraph Application Structure",
+      "source_url": "https://github.com/langchain-ai/docs",
+      "source_revision": "e6a66534c2655283f5d799e33e93ace48b4b27b8",
+      "source_path": "src/oss/langgraph/application-structure.mdx",
+      "source_sha256": "b526b9c7f77672db4dff73905e3bee45d614d290aaab74a119abe89e58f7ab66",
+      "license": "MIT",
+      "sha256": "b526b9c7f77672db4dff73905e3bee45d614d290aaab74a119abe89e58f7ab66"
+    }
+  ]
+}
