@@ -5,7 +5,8 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   server: {
-    port: 5173,
+    // 5173 落在 Windows 常见的保留端口段（5078–5177）内，会报 EACCES。
+    port: 15173,
     proxy: {
       "/api": {
         target: process.env.VITE_BACKEND_URL ?? "http://127.0.0.1:8000",

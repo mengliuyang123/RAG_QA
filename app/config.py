@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     auth_login_window_seconds: int = Field(default=60, ge=1)
     http_allowed_hosts: tuple[str, ...] = ("localhost", "127.0.0.1", "[::1]")
     cors_allowed_origins: tuple[str, ...] = (
-        "http://localhost:5173", "http://127.0.0.1:5173",
+        "http://localhost:15173", "http://127.0.0.1:15173",
     )
 
     llm_api_key: str | None = None

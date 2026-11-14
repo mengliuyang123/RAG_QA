@@ -70,18 +70,18 @@ npm install
 VITE_API_MODE=live VITE_BACKEND_URL=http://127.0.0.1:8000 npm run dev -- --mode live
 ```
 
-浏览器打开 `http://127.0.0.1:5173`。
+浏览器打开 `http://127.0.0.1:15173`。
 
 Windows PowerShell 可直接使用：
 
 ```powershell
 cd frontend
-npm.cmd run dev -- --mode live --host 127.0.0.1 --port 15173 --strictPort
+npm.cmd run dev -- --mode live --host 127.0.0.1
 ```
 
-此时访问 `http://127.0.0.1:15173`。如果默认端口 5173 报 `EACCES`，可用
+默认端口 15173 避开了 Windows 常见的保留端口段（5078–5177）。如果仍报 `EACCES`，可用
 `netsh interface ipv4 show excludedportrange protocol=tcp` 检查 Windows 保留端口，
-再选择未被保留的端口。开发服务器会将 `/api` 请求代理到本机 8000 端口。
+再用 `--port <端口> --strictPort` 选择未被保留的端口。开发服务器会将 `/api` 请求代理到本机 8000 端口。
 
 首次运行需要在项目根目录的新终端中创建账号；已有账号可直接登录，不必重新创建：
 

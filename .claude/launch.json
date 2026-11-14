@@ -11,10 +11,10 @@
         "dev",
         "--",
         "--port",
-        "5173",
+        "15173",
         "--strictPort"
       ],
-      "port": 5173
+      "port": 15173
     },
     {
       "name": "backend",
@@ -38,12 +38,12 @@
         "dev",
         "--",
         "--port",
-        "5174",
+        "15174",
         "--strictPort",
         "--mode",
         "live"
       ],
-      "port": 5174
+      "port": 15174
     },
     {
       "name": "backend-e2e",

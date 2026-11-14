@@ -212,12 +212,12 @@ async def test_cookie_cors_allowlist_and_host_rejection(tmp_path: Path) -> None:
             transport=httpx.ASGITransport(app=app), base_url="https://test",
         ) as client:
             allowed = await client.options("/api/conversations", headers={
-                "Origin": "http://localhost:5173",
+                "Origin": "http://localhost:15173",
                 "Access-Control-Request-Method": "POST",
                 "Access-Control-Request-Headers": "X-CSRF-Token,Content-Type",
             })
             assert allowed.status_code == 200
-            assert allowed.headers["access-control-allow-origin"] == "http://localhost:5173"
+            assert allowed.headers["access-control-allow-origin"] == "http://localhost:15173"
             assert allowed.headers["access-control-allow-credentials"] == "true"
             foreign = await client.options("/api/conversations", headers={
                 "Origin": "https://evil.example", "Access-Control-Request-Method": "POST",

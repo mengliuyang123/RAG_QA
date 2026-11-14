@@ -88,13 +88,9 @@ cd frontend
 VITE_API_MODE=live VITE_BACKEND_URL=http://127.0.0.1:8000 npm run dev -- --mode live
 ```
 
-前端默认地址为 `http://127.0.0.1:5173`。Windows 保留端口导致 `EACCES` 时，可运行：
-
-```powershell
-npm.cmd run dev -- --mode live --host 127.0.0.1 --port 15173 --strictPort
-```
-
-然后访问 `http://127.0.0.1:15173`。
+前端默认地址为 `http://127.0.0.1:15173`（避开 Windows 常见保留端口段 5078–5177）。
+若该端口仍报 `EACCES`，用 `netsh interface ipv4 show excludedportrange protocol=tcp`
+检查保留端口，再通过 `--port <端口> --strictPort` 换一个未被保留的端口。
 
 全新数据库没有默认账号。在项目根目录的交互终端创建管理员：
 
