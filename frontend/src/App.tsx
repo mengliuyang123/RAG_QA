@@ -4,7 +4,6 @@ import { Layout } from "./components/Layout";
 import { AdminInsightsPage } from "./pages/AdminInsightsPage";
 import { AdminKbPage } from "./pages/AdminKbPage";
 import { ChatPage } from "./pages/ChatPage";
-import { HomePage } from "./pages/HomePage";
 import { KnowledgePage } from "./pages/KnowledgePage";
 import { LoginPage } from "./pages/LoginPage";
 import { useApp } from "./state/AppContext";
@@ -23,7 +22,7 @@ export function App() {
   return (
     <Routes>
       <Route element={<Layout />}>
-        <Route index element={<HomePage />} />
+        <Route index element={<ChatPage />} />
         <Route path="c/:conversationId" element={<ChatPage />} />
         <Route path="kb" element={<KnowledgePage />} />
         <Route path="admin/kb" element={<AdminOnly><AdminKbPage /></AdminOnly>} />

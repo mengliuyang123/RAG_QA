@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Turn } from "../api/types";
-import { TurnView } from "./TurnView";
+import { TurnBody } from "./TurnView";
 
 vi.mock("../state/AppContext", () => ({
   useApp: () => ({
@@ -35,15 +35,15 @@ function refusedTurn(overrides: Partial<Turn> = {}): Turn {
 
 function renderTurn(turn: Turn, onRetryWithScope = vi.fn()) {
   render(
-    <TurnView
+    <TurnBody
       turn={turn} activeCitation={null} onCite={() => undefined} onAsk={() => undefined}
-      onRetryWithScope={onRetryWithScope} onFeedback={() => undefined}
+      onRetryWithScope={onRetryWithScope}
     />,
   );
   return onRetryWithScope;
 }
 
-describe("TurnView refusal", () => {
+describe("TurnBody refusal", () => {
   it("offers every out-of-scope knowledge base even without a backend suggestion", () => {
     const onRetry = renderTurn(refusedTurn());
     expect(screen.getByText("找到 1 段相关资料，但不足以回答")).toBeTruthy();

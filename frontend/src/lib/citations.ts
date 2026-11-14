@@ -22,3 +22,9 @@ export function splitAnswer(answer: string): AnswerSegment[] {
   }
   return segments;
 }
+
+// 渲染前把 [n] 替换成 markdown 不会解析的 ⟦n⟧ 占位符，
+// 由 AnswerText 的 rehype 插件还原成引用按钮，正文其余部分正常渲染 Markdown。
+export function maskCitations(answer: string): string {
+  return answer.replace(/\[(\d+)\]/g, "⟦$1⟧");
+}

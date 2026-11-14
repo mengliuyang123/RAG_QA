@@ -1,17 +1,20 @@
-import { useState } from "react";
-import type { Citation, FeedbackRating, KbScope, Turn } from "../api/types";
+import { useState, type ReactNode } from "react";
+import type { Citation, KbScope, Turn } from "../api/types";
 import { evidenceSummary } from "../lib/evidence";
 import { useApp } from "../state/AppContext";
 import { AnswerText } from "./AnswerText";
 import { Icon } from "./Icon";
 
-interface TurnViewProps {
+// 一轮已完成回答的正文部分（过程摘要、澄清/拒答卡片、正文与引用）。
+// 不依赖 assistant-ui 上下文，便于单独测试；问题气泡与操作栏由 chat/AssistantMessage 组合。
+interface TurnBodyProps {
   turn: Turn;
   activeCitation: Citation | null;
   onCite(citation: Citation): void;
   onAsk(question: string): void;
   onRetryWithScope(scope: KbScope, question: string): void;
-  onFeedback(turnId: string, rating: FeedbackRating | null): void;
+  /** 渲染正文；默认使用 AnswerText，assistant-ui 中替换为 MessagePrimitive.Parts。 */
+  renderAnswer?: (activePosition: number | null) => ReactNode;
 }
 
 function formatSeconds(ms: number): string {
@@ -24,7 +27,7 @@ function formatDate(value: string | null): string | null {
   return Number.isNaN(date.getTime()) ? null : date.toLocaleDateString("zh-CN");
 }
 
-const GROUNDING = {
+export const GROUNDING = {
   grounded: { className: "chip-success", text: "有据可查" },
   partial: { className: "chip-warning", text: "部分依据" },
   ungrounded: { className: "", text: "未参考知识库" },
@@ -116,30 +119,18 @@ function RetryScopePicker({ turn, onRetry }: { turn: Turn; onRetry(scope: KbScop
   );
 }
 
-export function TurnView({ turn, activeCitation, onCite, onAsk, onRetryWithScope, onFeedback }: TurnViewProps) {
+export function TurnBody({ turn, activeCitation, onCite, onAsk, onRetryWithScope, renderAnswer }: TurnBodyProps) {
   const { kbName } = useApp();
-  const [copied, setCopied] = useState(false);
-  const grounding = GROUNDING[turn.grounding];
-  const activePosition = activeCitation && turn.citations.includes(activeCitation)
+  // 引用对象在状态更新后会换新引用，按轮次 + 编号判断当前高亮。
+  const activePosition = activeCitation && turn.citations.some(
+    (citation) => citation.docId === activeCitation.docId && citation.position === activeCitation.position
+      && citation.chunkId === activeCitation.chunkId,
+  )
     ? activeCitation.position
     : null;
 
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(turn.answer);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      setCopied(false);
-    }
-  };
-
-  const toggleFeedback = (rating: FeedbackRating) =>
-    onFeedback(turn.id, turn.feedback === rating ? null : rating);
-
   return (
-    <article className="turn" aria-label="一轮问答">
-      <div className="question">{turn.question}</div>
+    <>
       <ProcessSummary turn={turn} />
 
       {turn.outcome === "clarification" && turn.clarification && (
@@ -170,12 +161,14 @@ export function TurnView({ turn, activeCitation, onCite, onAsk, onRetryWithScope
 
       {turn.outcome === "answered" && (
         <>
-          <AnswerText
-            answer={turn.answer}
-            citations={turn.citations}
-            activePosition={activePosition}
-            onCite={onCite}
-          />
+          {renderAnswer ? renderAnswer(activePosition) : (
+            <AnswerText
+              answer={turn.answer}
+              citations={turn.citations}
+              activePosition={activePosition}
+              onCite={onCite}
+            />
+          )}
           {turn.citations.length > 0 && (
             <div className="citations" aria-label="引用来源">
               {[...turn.citations].sort((a, b) => a.position - b.position).map((citation) => {
@@ -201,37 +194,6 @@ export function TurnView({ turn, activeCitation, onCite, onAsk, onRetryWithScope
           )}
         </>
       )}
-
-      <div className="turn-actions">
-        {turn.outcome === "answered" && (
-          <span className={`chip ${grounding.className}`}>{grounding.text}</span>
-        )}
-        {turn.outcome === "refused" && <span className="chip chip-warning">资料不足</span>}
-        <span className="grow" />
-        {turn.outcome === "answered" && (
-          <button type="button" className="icon-btn" aria-label={copied ? "已复制" : "复制回答"} title={copied ? "已复制" : "复制"} onClick={copy}>
-            <Icon name={copied ? "check" : "copy"} />
-          </button>
-        )}
-        <button
-          type="button"
-          className={`icon-btn ${turn.feedback === "up" ? "on" : ""}`}
-          aria-label="有帮助"
-          aria-pressed={turn.feedback === "up"}
-          onClick={() => toggleFeedback("up")}
-        >
-          <Icon name="up" />
-        </button>
-        <button
-          type="button"
-          className={`icon-btn ${turn.feedback === "down" ? "on" : ""}`}
-          aria-label="没帮助"
-          aria-pressed={turn.feedback === "down"}
-          onClick={() => toggleFeedback("down")}
-        >
-          <Icon name="down" />
-        </button>
-      </div>
-    </article>
+    </>
   );
 }
