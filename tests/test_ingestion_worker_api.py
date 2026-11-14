@@ -1,10 +1,14 @@
+from tests.postgres_support import pg_schema
+from app.bootstrap.container import _UNSET
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """真实生命周期后台入库、202、进度查询及身份校验的离线契约。"""
 
 from dataclasses import replace
 from pathlib import Path
 from threading import Event
-import sqlite3
+import psycopg
+from app.infrastructure.persistence.database import record_row, Record
 
 import anyio
 import httpx
@@ -21,14 +25,14 @@ from tests.test_job_ingestion_pipeline import BatchEmbedder
 
 
 def _app(tmp_path: Path, embedder: BatchEmbedder, *, enabled: bool = True):
-    settings = Settings(
+    settings = Settings(database_schema=pg_schema(tmp_path),
         _env_file=None, ingestion_worker_enabled=enabled,
-        docs_path=tmp_path / "docs", chroma_path=tmp_path / "chroma",
-        knowledge_base_db_path=tmp_path / "catalog.sqlite3",
-        trace_db_path=tmp_path / "traces.sqlite3",
-        auth_db_path=tmp_path / "auth.sqlite3",
-        conversation_db_path=tmp_path / "conversations.sqlite3",
-        agent_checkpoint_db_path=tmp_path / "checkpoints.sqlite3",
+        docs_path=tmp_path / "docs", artifacts_path=tmp_path / "chroma",
+
+
+
+
+
         http_allowed_hosts=("test",), chunk_size=11, chunk_overlap=0,
         embedding_batch_size=2, max_upload_size=1024,
         ingestion_queue_capacity=1, ingestion_poll_seconds=0.05,
@@ -264,9 +268,9 @@ async def test_startup_recovers_expired_running_job_and_replaces_partial_text(tm
         filename="queued.txt", text="OLD PRIVATE PARTIAL", chunk_index=0, page=None,
     )], [[1.0, 0.0]])
     root.close()
-    with sqlite3.connect(tmp_path / "catalog.sqlite3") as connection:
+    with pg_connect(tmp_path / "catalog.db") as connection:
         connection.execute(
-            "UPDATE ingestion_jobs SET lease_expires_at=? WHERE job_id=?",
+            "UPDATE ingestion_jobs SET lease_expires_at=%s WHERE job_id=%s",
             ("2000-01-01T00:00:00+00:00", queued.job_id),
         )
     replacement = build_application_container(root.settings, factories=replace(
@@ -364,7 +368,8 @@ async def test_shutdown_joins_worker_before_closing_embedding_provider(
                     release.set()
                 assert embedder.closed is True
                 assert len(embedder.batches) == 1
-                assert jobs.get(queued["job_id"]).status == "running"
+                from app.infrastructure.persistence.ingestion_jobs import PostgresIngestionJobRepository
+            assert PostgresIngestionJobRepository(pg_database(tmp_path/'state.db')).get(queued['job_id']).status == 'running'
     finally:
         release.set()
         root.close()
@@ -379,9 +384,9 @@ async def test_enabled_idle_worker_keeps_health_and_storage_lazy(tmp_path: Path)
     """
     settings = Settings(
         _env_file=None, ingestion_worker_enabled=True, ingestion_poll_seconds=0.05,
-        docs_path=tmp_path / "docs", chroma_path=tmp_path / "chroma",
-        knowledge_base_db_path=tmp_path / "catalog.sqlite3",
-        trace_db_path=tmp_path / "traces.sqlite3", http_allowed_hosts=("test",),
+        docs_path=tmp_path / "docs", artifacts_path=tmp_path / "chroma",
+
+         http_allowed_hosts=("test",),
         llm_api_key=None,
         embedding_api_key=None,
         openai_api_key=None,
@@ -392,6 +397,6 @@ async def test_enabled_idle_worker_keeps_health_and_storage_lazy(tmp_path: Path)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://test") as client:
             assert (await client.get("/api/health")).status_code == 200
             await anyio.sleep(0.12)
-            assert not settings.knowledge_base_db_path.exists()
-            assert not settings.chroma_path.exists()
+            assert app.state.container._knowledge_base_repository_slot.value is _UNSET
+            assert not settings.artifacts_path.exists()
             assert not settings.docs_path.exists()

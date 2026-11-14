@@ -49,6 +49,7 @@ from app.application.conversations.quality import ConversationQualityEvaluator
 from app.application.errors import LLMMissingAPIKeyError
 from app.application.retrieval.service import RetrievalService
 from app.config import Settings
+from app.infrastructure.persistence.database import Database
 from app.domain.retrieval import RetrievalStrategy
 from app.infrastructure.chunking.recursive import RecursiveDocumentChunker
 from app.infrastructure.embeddings.openai_compatible import (
@@ -67,37 +68,37 @@ from app.infrastructure.conversations.quality import ModelQualityEvaluator
 from app.infrastructure.indexes.bm25 import BM25Index
 from app.infrastructure.parsing.factory import ParserFactory
 from app.infrastructure.persistence.repair_log import RepairLog
-from app.infrastructure.persistence.traces import SQLiteTraceRepository
-from app.infrastructure.persistence.trace_queries import SQLiteTraceReader
-from app.infrastructure.persistence.feedback_admin import SQLiteFeedbackAdminRepository
-from app.infrastructure.persistence.shares import SQLiteShareRepository
+from app.infrastructure.persistence.traces import PostgresTraceRepository
+from app.infrastructure.persistence.trace_queries import PostgresTraceReader
+from app.infrastructure.persistence.feedback_admin import PostgresFeedbackAdminRepository
+from app.infrastructure.persistence.shares import PostgresShareRepository
 from app.infrastructure.persistence.evaluation_reports import FileEvaluationReportReader
-from app.infrastructure.persistence.insights import SQLiteRefusalReader
-from app.infrastructure.persistence.insights import SQLiteInsightMetricReader
-from app.infrastructure.persistence.document_citations import SQLiteDocumentCitationReader
-from app.infrastructure.persistence.knowledge_deletion import SQLiteKnowledgeDeletionRepository
+from app.infrastructure.persistence.insights import PostgresRefusalReader
+from app.infrastructure.persistence.insights import PostgresInsightMetricReader
+from app.infrastructure.persistence.document_citations import PostgresDocumentCitationReader
+from app.infrastructure.persistence.knowledge_deletion import PostgresKnowledgeDeletionRepository
 from app.infrastructure.auth.passwords import Argon2PasswordHasher
-from app.infrastructure.auth.sqlite_repository import SQLiteAuthRepository
+from app.infrastructure.auth.postgres_repository import PostgresAuthRepository
 from app.infrastructure.persistence.knowledge_bases import (
-    SQLiteKnowledgeBaseRepository,
+    PostgresKnowledgeBaseRepository,
 )
-from app.infrastructure.persistence.knowledge_registry import SQLiteKnowledgeReadRegistry
+from app.infrastructure.persistence.knowledge_registry import PostgresKnowledgeReadRegistry
 from app.infrastructure.persistence.ingestion_jobs import (
-    SQLiteIngestionJobRepository,
+    PostgresIngestionJobRepository,
     has_pending_ingestion_jobs,
 )
 from app.infrastructure.persistence.ingestion_sources import LocalIngestionSources
 from app.infrastructure.persistence.ingestion_execution import (
-    LocalIngestionExecutionGuard,
+    PostgresIngestionExecutionGuard,
 )
 from app.infrastructure.reranking.dashscope import RemoteReranker
-from app.infrastructure.vectorstores.chroma import ChromaVectorStore
-from app.infrastructure.conversations.checkpoint import SQLiteCheckpointStore
+from app.infrastructure.vectorstores.postgres import PostgresVectorStore
+from app.infrastructure.conversations.checkpoint import PostgresCheckpointStore
 from app.infrastructure.conversations.langgraph_agent import (
     LangGraphConversationAgent,
 )
-from app.infrastructure.conversations.sqlite_repository import (
-    SQLiteConversationRepository,
+from app.infrastructure.conversations.postgres_repository import (
+    PostgresConversationRepository,
 )
 
 
@@ -131,7 +132,7 @@ class KnowledgeReadRegistry(DocumentLifecycle, CuratedQuestionRepository, Protoc
 
 VectorStoreFactory = Callable[
     [
-        Path,
+        Database,
         str,
         Mapping[str, str | int] | None,
         bool,
@@ -154,10 +155,10 @@ LLMProviderFactory = Callable[
     [str | None, str, str, float | None, str | None],
     LLMProvider,
 ]
-ConversationRepositoryFactory = Callable[[Path], ConversationRepository]
-KnowledgeBaseRepositoryFactory = Callable[[Path], KnowledgeBaseRepository]
-TraceRepositoryFactory = Callable[[Path], TraceRepository]
-AuthRepositoryFactory = Callable[[Path], AuthRepository]
+ConversationRepositoryFactory = Callable[[Database], ConversationRepository]
+KnowledgeBaseRepositoryFactory = Callable[[Database], KnowledgeBaseRepository]
+TraceRepositoryFactory = Callable[[Database], TraceRepository]
+AuthRepositoryFactory = Callable[[Database], AuthRepository]
 QualityEvaluatorFactory = Callable[
     [str | None, str, str, float | None, str | None],
     ConversationQualityEvaluator,
@@ -167,7 +168,7 @@ UnderstandingProviderFactory = Callable[
     StructuredOutputProvider,
 ]
 ConversationCheckpointStoreFactory = Callable[
-    [Path], ConversationCheckpointAdapter
+    [Database], ConversationCheckpointAdapter
 ]
 ConversationAgentFactory = Callable[
     [
@@ -186,20 +187,23 @@ ConversationAgentFactory = Callable[
 
 
 def _create_vector_store(
-    path: Path,
+    path: Database,
     collection_name: str,
     collection_metadata: Mapping[str, str | int] | None,
     rebuild_collection: bool,
+    *, embedding_identity: str | None = None,
 ) -> VectorStoreAdapter:
-    vector_store = ChromaVectorStore(
-        path=path,
+    if embedding_identity is not None:
+        collection_metadata = {**dict(collection_metadata or {}), 'embedding_identity': embedding_identity}
+    vector_store = PostgresVectorStore(
+        database=path,
         collection_name=collection_name,
         collection_metadata=collection_metadata,
     )
     if rebuild_collection:
         vector_store.delete_collection()
-        vector_store = ChromaVectorStore(
-            path=path,
+        vector_store = PostgresVectorStore(
+            database=path,
             collection_name=collection_name,
             collection_metadata=collection_metadata,
         )
@@ -290,9 +294,9 @@ def _create_llm_provider(
 
 
 def _create_conversation_repository(
-    path: Path,
+    path: Database,
 ) -> ConversationRepository:
-    return SQLiteConversationRepository(path)
+    return PostgresConversationRepository(path)
 
 
 def _create_quality_evaluator(
@@ -337,23 +341,23 @@ def _create_quality_evaluator(
         raise
 
 
-def _create_knowledge_base_repository(path: Path) -> KnowledgeBaseRepository:
-    return SQLiteKnowledgeBaseRepository(path)
+def _create_knowledge_base_repository(path: Database) -> KnowledgeBaseRepository:
+    return PostgresKnowledgeBaseRepository(path)
 
 
-def _create_knowledge_read_registry(path: Path) -> KnowledgeReadRegistry:
-    return SQLiteKnowledgeReadRegistry(path)
+def _create_knowledge_read_registry(path: Database) -> KnowledgeReadRegistry:
+    return PostgresKnowledgeReadRegistry(path)
 
 
-def _create_ingestion_job_repository(path: Path) -> IngestionJobRepository:
-    return SQLiteIngestionJobRepository(path)
+def _create_ingestion_job_repository(path: Database) -> IngestionJobRepository:
+    return PostgresIngestionJobRepository(path)
 
 
-def _create_trace_repository(path: Path) -> TraceRepository:
-    return SQLiteTraceRepository(path)
+def _create_trace_repository(path: Database) -> TraceRepository:
+    return PostgresTraceRepository(path)
 
 
-def _create_trace_reader(trace_path: Path, conversation_path: Path) -> TraceReader:
+def _create_trace_reader(trace_path: Database, conversation_path: Database) -> TraceReader:
     """为组合根创建不写业务数据的只读投影。
 
     Args:
@@ -363,18 +367,18 @@ def _create_trace_reader(trace_path: Path, conversation_path: Path) -> TraceRead
     Returns:
         双库只读查询适配器。
     """
-    return SQLiteTraceReader(trace_path, conversation_path)
+    return PostgresTraceReader(trace_path)
 
 
-def _create_auth_repository(path: Path) -> AuthRepository:
-    return SQLiteAuthRepository(path)
+def _create_auth_repository(path: Database) -> AuthRepository:
+    return PostgresAuthRepository(path)
 
 
-def _create_feedback_admin_repository(path: Path) -> FeedbackAdminRepository:
-    return SQLiteFeedbackAdminRepository(path)
+def _create_feedback_admin_repository(path: Database) -> FeedbackAdminRepository:
+    return PostgresFeedbackAdminRepository(path)
 
 
-def _create_share_repository(path: Path) -> ShareRepository:
+def _create_share_repository(path: Database) -> ShareRepository:
     """装配当前运行业务库的分享存储。
 
     Args:
@@ -383,23 +387,23 @@ def _create_share_repository(path: Path) -> ShareRepository:
     Returns:
         事务化的分享存储。
     """
-    return SQLiteShareRepository(path)
+    return PostgresShareRepository(path)
 
 
-def _create_refusal_reader(path: Path) -> RefusalReader:
-    return SQLiteRefusalReader(path)
+def _create_refusal_reader(path: Database) -> RefusalReader:
+    return PostgresRefusalReader(path)
 
 
-def _create_insight_metric_reader(path: Path) -> InsightMetricReader:
-    return SQLiteInsightMetricReader(path)
+def _create_insight_metric_reader(path: Database) -> InsightMetricReader:
+    return PostgresInsightMetricReader(path)
 
 
-def _create_document_citation_reader(path: Path) -> DocumentCitationReader:
-    return SQLiteDocumentCitationReader(path)
+def _create_document_citation_reader(path: Database) -> DocumentCitationReader:
+    return PostgresDocumentCitationReader(path)
 
 
-def _create_knowledge_deletion_repository(path: Path) -> KnowledgeDeletionRepository:
-    return SQLiteKnowledgeDeletionRepository(path)
+def _create_knowledge_deletion_repository(path: Database) -> KnowledgeDeletionRepository:
+    return PostgresKnowledgeDeletionRepository(path)
 
 
 def _create_understanding_provider(
@@ -476,9 +480,9 @@ def create_evaluation_judge_provider(
 
 
 def _create_conversation_checkpoint_store(
-    path: Path,
+    path: Database,
 ) -> ConversationCheckpointAdapter:
-    return SQLiteCheckpointStore(path)
+    return PostgresCheckpointStore(path)
 
 
 @dataclass(frozen=True)
@@ -636,27 +640,27 @@ class AdapterFactories:
     knowledge_base_repository: KnowledgeBaseRepositoryFactory = (
         _create_knowledge_base_repository
     )
-    knowledge_read_registry: Callable[[Path], KnowledgeReadRegistry] = (
+    knowledge_read_registry: Callable[[Database], KnowledgeReadRegistry] = (
         _create_knowledge_read_registry
     )
-    ingestion_job_repository: Callable[[Path], IngestionJobRepository] = (
+    ingestion_job_repository: Callable[[Database], IngestionJobRepository] = (
         _create_ingestion_job_repository
     )
     ingestion_sources: Callable[[Path], IngestionSources] = LocalIngestionSources
-    ingestion_pending_probe: Callable[[Path], bool] = has_pending_ingestion_jobs
-    ingestion_execution_guard: Callable[[Path], IngestionExecutionGuard] = (
-        LocalIngestionExecutionGuard
+    ingestion_pending_probe: Callable[[Database], bool] = has_pending_ingestion_jobs
+    ingestion_execution_guard: Callable[[Database], IngestionExecutionGuard] = (
+        PostgresIngestionExecutionGuard
     )
     quality_evaluator: QualityEvaluatorFactory = _create_quality_evaluator
     trace_repository: TraceRepositoryFactory = _create_trace_repository
-    trace_reader: Callable[[Path, Path], TraceReader] = _create_trace_reader
-    feedback_admin_repository: Callable[[Path], FeedbackAdminRepository] = _create_feedback_admin_repository
-    share_repository: Callable[[Path], ShareRepository] = _create_share_repository
+    trace_reader: Callable[[Database, Database], TraceReader] = _create_trace_reader
+    feedback_admin_repository: Callable[[Database], FeedbackAdminRepository] = _create_feedback_admin_repository
+    share_repository: Callable[[Database], ShareRepository] = _create_share_repository
     evaluation_report_reader: Callable[[Path], EvaluationReportReader] = FileEvaluationReportReader
-    refusal_reader: Callable[[Path], RefusalReader] = _create_refusal_reader
-    insight_metric_reader: Callable[[Path], InsightMetricReader] = _create_insight_metric_reader
-    document_citation_reader: Callable[[Path], DocumentCitationReader] = _create_document_citation_reader
-    knowledge_deletion_repository: Callable[[Path], KnowledgeDeletionRepository] = _create_knowledge_deletion_repository
+    refusal_reader: Callable[[Database], RefusalReader] = _create_refusal_reader
+    insight_metric_reader: Callable[[Database], InsightMetricReader] = _create_insight_metric_reader
+    document_citation_reader: Callable[[Database], DocumentCitationReader] = _create_document_citation_reader
+    knowledge_deletion_repository: Callable[[Database], KnowledgeDeletionRepository] = _create_knowledge_deletion_repository
     auth_repository: AuthRepositoryFactory = _create_auth_repository
     password_hasher: Callable[[], PasswordHasher] = Argon2PasswordHasher
     understanding_provider: UnderstandingProviderFactory = (
@@ -682,7 +686,11 @@ def configured_adapter_factories(settings: Settings) -> AdapterFactories:
     Returns:
         使用有限请求等待和明确检索策略的 adapter 工厂集合。
     """
+    from app.application.tracing.recorder import normalize_origin
     return AdapterFactories(
+        vector_store=partial(_create_vector_store, embedding_identity=(
+            settings.embedding_model + '@' + normalize_origin(settings.embedding_base_url)
+        )),
         understanding_provider=partial(
             _create_understanding_provider,
             timeout_seconds=settings.resolved_understanding_timeout_seconds,

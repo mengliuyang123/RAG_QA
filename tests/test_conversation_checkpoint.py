@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """LangGraph SQLite checkpoint 生命周期测试。"""
 
@@ -8,13 +9,13 @@ from langgraph.graph import END
 from langgraph.graph import START
 from langgraph.graph import StateGraph
 
-from app.infrastructure.conversations.checkpoint import SQLiteCheckpointStore
+from app.infrastructure.conversations.checkpoint import PostgresCheckpointStore
 
 
 def test_checkpoint_store_persists_and_deletes_one_thread(
     tmp_path: Path,
 ) -> None:
-    store = SQLiteCheckpointStore(tmp_path / "nested" / "checkpoints.db")
+    store = PostgresCheckpointStore(pg_database(tmp_path / "nested" / "checkpoints.db"))
     builder = StateGraph(dict)
     builder.add_node("answer", lambda state: {**state, "answer": "ok"})
     builder.add_edge(START, "answer")

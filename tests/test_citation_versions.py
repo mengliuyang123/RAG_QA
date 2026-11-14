@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """已记录索引版本不得在召回、裁判、图或HTTP／正式历史中丢失。"""
 
@@ -30,7 +31,7 @@ from app.infrastructure.conversations.langgraph_agent import LangGraphConversati
 from app.infrastructure.conversations.quality import ModelQualityEvaluator
 from app.infrastructure.indexes.bm25 import BM25Index
 from app.infrastructure.reranking.dashscope import RemoteReranker
-from app.infrastructure.vectorstores.chroma import ChromaVectorStore
+from app.infrastructure.vectorstores.postgres import PostgresVectorStore
 from tests.test_agent_quality import _JSONModel
 from tests.test_fast_lane import _Provider
 from tests.test_fast_lane import _Quality
@@ -213,7 +214,7 @@ def test_all_retrieval_strategies_and_legacy_citation_keep_index_version(tmp_pat
     """
     identifier = str(uuid4())
     chunk = DocumentChunk(id=f"opaque/{identifier}/a", doc_id=identifier, filename="guide.md", text="needle 使用SQLite", page=None, chunk_index=0, doc_updated_at=VERSION)
-    store = ChromaVectorStore(tmp_path / "chroma", "versions")
+    store = PostgresVectorStore(pg_database(tmp_path / "chroma"), "versions")
     store.add_chunks([chunk], [[1.0, 0.0]])
     index = BM25Index()
     index.rebuild([chunk])
@@ -371,7 +372,8 @@ def test_corrupt_index_version_is_not_downgraded_to_unknown(tmp_path: Path, stor
     app, chunk, _ = _app(tmp_path)
     root = app.state.container
     try:
-        root.vector_store._collection.update(ids=[chunk.id], metadatas=[{"doc_updated_at": stored}])
+        with root.database.connection() as connection:
+            connection.execute("UPDATE vector_chunks SET metadata=jsonb_set(metadata,'{doc_updated_at}',to_jsonb(%s::text)) WHERE id=%s", (stored,chunk.id))
         retriever = VectorRetriever(root.vector_store, FakeQueryEmbedder())
         with pytest.raises(VectorStoreError):
             retriever.retrieve("needle", top_k=1)

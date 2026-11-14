@@ -16,6 +16,8 @@ from app.domain.retrieval import RetrievalStrategy
 from evaluation.judge import JudgeScore
 from evaluation.ragas_eval import RagasScores
 from evaluation.rgb import RGBCase
+from tests.corpus_state import CORPUS_MISSING_REASON
+from tests.corpus_state import evaluation_corpus_complete
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -140,8 +142,9 @@ def _settings(tmp_path: Path, isolated: bool = True) -> Settings:
         evaluation_judge_base_url="https://judge.example/v1",
         evaluation_judge_model="judge-model",
         evaluation_judge_reasoning_effort="none",
-        chroma_path=chroma_path,
-        evaluation_chroma_path=evaluation_chroma_path,
+        database_schema="rag_qa", evaluation_database_schema="rag_qa_evaluation" if isolated else "rag_qa",
+        artifacts_path=chroma_path,
+        evaluation_artifacts_path=evaluation_chroma_path,
     )
 
 
@@ -268,12 +271,15 @@ def test_preflight_fails_before_datasets_or_remote_factories(
         rgb_answerer_builder=unexpected,
     )
 
-    with pytest.raises(ValueError, match="路径必须与生产路径隔离"):
+    with pytest.raises(ValueError, match="schema 必须与生产 schema 隔离"):
         run_evaluation(_options(tmp_path), dependencies)
 
     assert calls == []
 
 
+@pytest.mark.skipif(
+    not evaluation_corpus_complete(), reason=CORPUS_MISSING_REASON,
+)
 def test_small_offline_run_checkpoints_and_resume_skip_successes(
     tmp_path: Path,
 ) -> None:
@@ -379,6 +385,9 @@ def test_rgb_answerer_closes_owned_provider_once(tmp_path: Path) -> None:
     assert provider.close_calls == 1
 
 
+@pytest.mark.skipif(
+    not evaluation_corpus_complete(), reason=CORPUS_MISSING_REASON,
+)
 def test_rgb_answerer_closes_after_generation_failure(
     tmp_path: Path,
 ) -> None:
@@ -430,6 +439,9 @@ def test_rgb_answerer_closes_after_generation_failure(
     assert answerer.close_calls == 1
 
 
+@pytest.mark.skipif(
+    not evaluation_corpus_complete(), reason=CORPUS_MISSING_REASON,
+)
 def test_rgb_answerer_closes_when_judge_construction_fails(
     tmp_path: Path,
 ) -> None:
@@ -484,6 +496,9 @@ def test_rgb_answerer_closes_when_judge_construction_fails(
     assert answerer.close_calls == 1
 
 
+@pytest.mark.skipif(
+    not evaluation_corpus_complete(), reason=CORPUS_MISSING_REASON,
+)
 def test_failed_run_preserves_existing_latest(tmp_path: Path) -> None:
     """运行失败必须抛出且完全保留上次正式报告。"""
     from evaluation.run_eval import EvaluationDependencies, run_evaluation

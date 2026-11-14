@@ -2,7 +2,8 @@
 """与目录同路径保存无正文删除记录及显式预设，不扫描会话或反馈。"""
 
 import json
-import sqlite3
+import psycopg
+from app.infrastructure.persistence.database import Database, Record
 from collections.abc import Iterator
 from contextlib import closing
 from contextlib import contextmanager
@@ -21,33 +22,11 @@ from app.domain.suggestions import SuggestedQuestion
 QUESTION_NAMESPACE = UUID("36832ea3-3ee8-4bc1-b565-aed27eeaa83a")
 
 
-class SQLiteKnowledgeReadRegistry:
+class PostgresKnowledgeReadRegistry:
     """不持有长连接，预设与来源生命周期不混入模型执行追踪。"""
 
-    def __init__(self, path: Path) -> None:
-        """初始化独立表，不改写已有目录行或向量索引。
-
-        Args:
-            path: 与知识库目录相同的受控、可评估隔离的路径。
-
-        Returns:
-            None。
-        """
-        self._path = path
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with self._connection() as connection:
-                connection.execute("""CREATE TABLE IF NOT EXISTS document_deletions (
-                    doc_id TEXT PRIMARY KEY, kb_id TEXT NOT NULL, recorded_at TEXT NOT NULL
-                )""")
-                connection.execute("""CREATE TABLE IF NOT EXISTS curated_questions (
-                    id TEXT PRIMARY KEY, kb_id TEXT NOT NULL, text TEXT NOT NULL,
-                    sort_order INTEGER NOT NULL CHECK (sort_order >= 0),
-                    UNIQUE(kb_id, text), UNIQUE(kb_id, sort_order),
-                    FOREIGN KEY (kb_id) REFERENCES knowledge_bases(id) ON DELETE CASCADE
-                )""")
-        except OSError as error:
-            raise KnowledgeContentError("知识库读取登记初始化失败") from error
+    def __init__(self, database: Database) -> None:
+        self._database = database
 
     def record_deletion(self, doc_id: UUID, kb_id: str) -> None:
         """只记录已验证的文档身份，不保存文件名、正文或操作者历史。
@@ -61,7 +40,7 @@ class SQLiteKnowledgeReadRegistry:
         """
         with self._connection() as connection:
             connection.execute(
-                "INSERT INTO document_deletions VALUES (?, ?, ?) "
+                "INSERT INTO document_deletions VALUES (%s, %s, %s) "
                 "ON CONFLICT(doc_id) DO UPDATE SET kb_id=excluded.kb_id, recorded_at=excluded.recorded_at",
                 (str(doc_id), kb_id, datetime.now(UTC).isoformat()),
             )
@@ -77,7 +56,7 @@ class SQLiteKnowledgeReadRegistry:
         """
         with self._connection() as connection:
             row = connection.execute(
-                "SELECT 1 FROM document_deletions WHERE doc_id = ?", (str(doc_id),),
+                "SELECT 1 FROM document_deletions WHERE doc_id = %s", (str(doc_id),),
             ).fetchone()
         return row is not None
 
@@ -96,14 +75,14 @@ class SQLiteKnowledgeReadRegistry:
         where = " WHERE k.lifecycle = 'active'"
         parameters = []
         if kb_id is not None:
-            where += " AND q.kb_id = ?"
+            where += " AND q.kb_id = %s"
             parameters.append(kb_id)
         parameters.append(limit)
         with self._connection() as connection:
             rows = connection.execute(
                 "SELECT q.id, q.kb_id, q.text FROM curated_questions q "
                 "JOIN knowledge_bases k ON k.id = q.kb_id" + where
-                + " ORDER BY q.kb_id, q.sort_order, q.id LIMIT ?", parameters,
+                + " ORDER BY q.kb_id, q.sort_order, q.id LIMIT %s", parameters,
             ).fetchall()
         try:
             return tuple(SuggestedQuestion(id=row[0], kb_id=row[1], text=row[2]) for row in rows)
@@ -130,23 +109,21 @@ class SQLiteKnowledgeReadRegistry:
                 id=f"sq_{uuid5(QUESTION_NAMESPACE, identity)}", kb_id=kb_id, text=text,
             ))
         with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            if connection.execute("SELECT 1 FROM knowledge_bases WHERE id = ? AND lifecycle = 'active'", (kb_id,)).fetchone() is None:
+            connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || 'business_write', 0))")
+            if connection.execute("SELECT 1 FROM knowledge_bases WHERE id = %s AND lifecycle = 'active'", (kb_id,)).fetchone() is None:
                 raise KnowledgeBaseNotFoundError("知识库不存在")
-            connection.execute("DELETE FROM curated_questions WHERE kb_id = ?", (kb_id,))
+            connection.execute("DELETE FROM curated_questions WHERE kb_id = %s", (kb_id,))
             for index, question in enumerate(questions):
                 connection.execute(
-                    "INSERT INTO curated_questions VALUES (?, ?, ?, ?)",
+                    "INSERT INTO curated_questions VALUES (%s, %s, %s, %s)",
                     (question.id, kb_id, question.text, index),
                 )
         return tuple(questions)
 
     @contextmanager
-    def _connection(self) -> Iterator[sqlite3.Connection]:
+    def _connection(self) -> Iterator[psycopg.Connection]:
         try:
-            with closing(sqlite3.connect(self._path, timeout=5.0)) as connection:
-                connection.execute("PRAGMA foreign_keys = ON")
-                with connection:
-                    yield connection
-        except sqlite3.Error as error:
-            raise KnowledgeContentError("知识库读取登记暂时不可用") from error
+            with self._database.connection() as connection:
+                yield connection
+        except psycopg.Error as exc:
+            raise KnowledgeContentError("PostgreSQL 仓储操作失败") from exc

@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """非流式知识库问答 HTTP 接口测试。"""
 
@@ -288,12 +289,12 @@ def _create_production_query_app(
         embedding_api_key="offline",
         llm_api_key="offline",
         reranker_base_url=None,
-        chroma_path=tmp_path / "chroma",
+        artifacts_path=tmp_path / "chroma",
         docs_path=tmp_path / "docs",
-        knowledge_base_db_path=tmp_path / "catalog.sqlite3",
-        trace_db_path=tmp_path / "traces.sqlite3",
-        conversation_db_path=tmp_path / "conversations.sqlite3",
-        agent_checkpoint_db_path=tmp_path / "checkpoints.sqlite3",
+
+
+
+
     )
     container_factory = partial(
         build_application_container,

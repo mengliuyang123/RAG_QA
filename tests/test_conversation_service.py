@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """多轮会话应用服务、并发与流式提交边界测试。"""
 
@@ -24,8 +25,8 @@ from app.domain.conversations import AgentResult
 from app.domain.conversations import AnswerMode
 from app.domain.conversations import ConversationStatus
 from app.domain.conversations import ConversationTurn
-from app.infrastructure.conversations.sqlite_repository import (
-    SQLiteConversationRepository,
+from app.infrastructure.conversations.postgres_repository import (
+    PostgresConversationRepository,
 )
 from app.infrastructure.generation.token_counting import Utf8TokenUpperBoundCounter
 
@@ -89,8 +90,8 @@ def _service(
     checkpoint: _FakeCheckpointStore | None = None,
 ) -> ConversationService:
     return ConversationService(
-        repository=SQLiteConversationRepository(
-            tmp_path / "conversations.db"
+        repository=PostgresConversationRepository(
+            pg_database(tmp_path / "conversations.db")
         ),
         agent=agent,
         checkpoint_store=checkpoint or _FakeCheckpointStore(),

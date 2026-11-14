@@ -1,8 +1,10 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """拒答后台必须读取已提交事实，分页前过滤且敏感读取有审计。"""
 
 import json
-import sqlite3
+import psycopg
+from app.infrastructure.persistence.database import record_row, Record
 from contextlib import AsyncExitStack
 from pathlib import Path
 from uuid import UUID
@@ -22,7 +24,7 @@ from app.domain.conversations import ConversationTurn
 from app.domain.agent_quality import EvidenceAssessment
 from app.domain.agent_quality import EvidenceItem
 from app.domain.knowledge_bases import KnowledgeBase
-from app.infrastructure.conversations.sqlite_repository import SQLiteConversationRepository
+from app.infrastructure.conversations.postgres_repository import PostgresConversationRepository
 from tests.http_auth import TEST_USER_ID
 from tests.test_auth_service import PASSWORD
 from tests.test_unified_query_api import _app
@@ -41,35 +43,35 @@ def test_refusal_insights_use_runtime_paths_without_models(tmp_path: Path) -> No
         None。
     """
     settings = Settings(
-        _env_file=None, conversation_db_path=tmp_path / "unused-business.sqlite3",
-        trace_db_path=tmp_path / "unused-trace.sqlite3",
-        chroma_path=tmp_path / "unused-chroma",
-        knowledge_base_db_path=tmp_path / "unused-catalog.sqlite3",
+        _env_file=None,
+
+        artifacts_path=tmp_path / "unused-chroma",
+
     )
-    root = build_application_container(settings, RuntimeOptions(
-        conversation_db_path=tmp_path / "isolated-business.sqlite3",
-        trace_db_path=tmp_path / "isolated-trace.sqlite3",
-        knowledge_base_db_path=tmp_path / "isolated-catalog.sqlite3",
+    root = build_application_container(settings, RuntimeOptions(database_schema='isolated',
+
+
+
     ))
     try:
         page = root.refusal_insight_service.list(TEST_USER_ID)
         assert page.refusals == ()
-        assert (tmp_path / "isolated-business.sqlite3").exists()
-        assert (tmp_path / "isolated-trace.sqlite3").exists()
-        assert not settings.conversation_db_path.exists()
-        assert not settings.trace_db_path.exists()
-        assert not settings.chroma_path.exists()
+        assert root.database.schema != settings.database_schema
+        assert root.database.schema != settings.database_schema
+        assert root.database.schema != settings.database_schema
+        assert root.database.schema != settings.database_schema
+        assert not settings.artifacts_path.exists()
         overview = root.insight_overview_service.get(TEST_USER_ID)
         assert overview.totals.questions == 0
         assert overview.totals.active_users == 0
-        assert not settings.knowledge_base_db_path.exists()
-        assert (tmp_path / "isolated-catalog.sqlite3").exists()
+        assert root.database.schema != settings.database_schema
+        assert root.database.schema != settings.database_schema
     finally:
         root.close()
 
 
 def _refusal(
-    repository: SQLiteConversationRepository, *, question: str = "私密拒答问题",
+    repository: PostgresConversationRepository, *, question: str = "私密拒答问题",
     kb_ids: tuple[str, ...] = ("default",), owner_id: UUID = TEST_USER_ID,
 ) -> ConversationTurn:
     conversation = repository.create(owner_id=owner_id)
@@ -117,7 +119,7 @@ async def test_refusal_list_authorizes_audits_without_granting_conversation_acce
                 })).status_code == 200
                 clients.append(client)
             admin, member = clients
-            repository = SQLiteConversationRepository(root.settings.conversation_db_path)
+            repository = PostgresConversationRepository(pg_database(root.database))
             refused = _refusal(repository, owner_id=users[1].id)
             assert (await member.get(ENDPOINT)).status_code == 403
             assert (await admin.get(f"/api/conversations/{refused.conversation_id}")).status_code == 404
@@ -134,7 +136,7 @@ async def test_refusal_list_authorizes_audits_without_granting_conversation_acce
             for field in ("user_id", "owner_id", "user_name", "conversation_id", "answer"):
                 assert field not in items[0]
             assert quality.evidence_calls == 0
-            with sqlite3.connect(root.settings.trace_db_path) as connection:
+            with pg_connect(root.database) as connection:
                 rows = connection.execute("SELECT event_json FROM admin_access_audit").fetchall()
                 traces = connection.execute("SELECT COUNT(*) FROM traces").fetchone()[0]
             assert traces == 0
@@ -168,17 +170,17 @@ async def test_refusal_storage_failure_is_503_not_empty_or_private_error(
     """
     app, _, _ = _app(tmp_path)
     root = app.state.container
-    repository = SQLiteConversationRepository(root.settings.conversation_db_path)
+    repository = PostgresConversationRepository(pg_database(root.database))
     turn = _refusal(repository)
     try:
         # 先完成生产组合根初始化，故障之后读取适配器不能建表“修复”为空。
         root.refusal_insight_service
-        with sqlite3.connect(root.settings.conversation_db_path) as connection:
+        with pg_connect(root.database) as connection:
             if fault == "missing_table":
                 connection.execute("ALTER TABLE conversation_turns RENAME TO private_missing")
             else:
                 connection.execute(
-                    "UPDATE conversation_turns SET metadata_json = ? WHERE id = ?",
+                    "UPDATE conversation_turns SET metadata_json = %s WHERE id = %s",
                     ('{"outcome":"refused","refusal":"私密内容"}', str(turn.id)),
                 )
         async with httpx.AsyncClient(
@@ -272,7 +274,7 @@ async def test_refusal_filters_precede_paging_and_cursor_binds_kb(tmp_path: Path
     """
     app, _, _ = _app(tmp_path)
     root = app.state.container
-    repository = SQLiteConversationRepository(root.settings.conversation_db_path)
+    repository = PostgresConversationRepository(pg_database(root.database))
     expected = set()
     for index in range(6):
         kb_ids = ("default", "ops") if index % 2 == 0 else ("other",)
@@ -285,9 +287,9 @@ async def test_refusal_filters_precede_paging_and_cursor_binds_kb(tmp_path: Path
     repository.save_turn(repository.create(owner_id=TEST_USER_ID).id, "旧拒答文案", AgentResult(
         answer="无法根据现有资料回答", answer_mode="retrieval", retrieval_calls=1, citations=[],
     ), 1.0)
-    with sqlite3.connect(root.settings.conversation_db_path) as connection:
+    with pg_connect(root.database) as connection:
         connection.execute("UPDATE conversation_turns SET created_at = '2026-10-20T00:00:00+00:00'")
-        connection.execute("UPDATE conversation_turns SET metadata_json = NULL WHERE id = ?", (str(unknown.id),))
+        connection.execute("UPDATE conversation_turns SET metadata_json = NULL WHERE id = %s", (str(unknown.id),))
     try:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test",
@@ -331,7 +333,7 @@ async def test_refusal_audit_failure_does_not_return_sensitive_page(
     """
     app, _, _ = _app(tmp_path)
     root = app.state.container
-    repository = SQLiteConversationRepository(root.settings.conversation_db_path)
+    repository = PostgresConversationRepository(pg_database(root.database))
     _refusal(repository)
 
     def fail(event: object) -> None:

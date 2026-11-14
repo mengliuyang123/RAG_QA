@@ -25,7 +25,7 @@ def test_runtime_delete_removes_own_source_and_preserves_production_sentinel(tmp
     settings = _settings(tmp_path)
     factories = replace(AdapterFactories(), embedding_provider=lambda *args: BatchEmbedder())
     root = build_application_container(settings, RuntimeOptions(
-        chroma_path=tmp_path / "isolated", collection_name="runtime-docs",
+        artifacts_path=tmp_path / "isolated", collection_name="runtime-docs",
     ), factories=factories)
     try:
         job = root.ingestion_job_service.submit("default", "guide.txt", b"abcdefghij\n" * 3, uuid4())
@@ -55,7 +55,7 @@ def test_runtime_legacy_upload_uses_job_source_directory(tmp_path: Path) -> None
     settings = _settings(tmp_path)
     factories = replace(AdapterFactories(), embedding_provider=lambda *args: BatchEmbedder())
     root = build_application_container(settings, RuntimeOptions(
-        chroma_path=tmp_path / "isolated", collection_name="legacy-docs",
+        artifacts_path=tmp_path / "isolated", collection_name="legacy-docs",
     ), factories=factories)
     try:
         result = root.upload_service.save_and_parse("guide.txt", b"abcdefghij\n" * 3)

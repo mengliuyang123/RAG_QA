@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """使用当前 .env 模型验证标准 tool calling 与真实多轮图执行。"""
 
@@ -13,9 +14,9 @@ from app.config import Settings
 from app.domain.conversations import AnswerMode
 from app.domain.retrieval import RetrievalResult
 from app.domain.retrieval import RetrievalStrategy
-from app.infrastructure.conversations.checkpoint import SQLiteCheckpointStore
-from app.infrastructure.conversations.sqlite_repository import (
-    SQLiteConversationRepository,
+from app.infrastructure.conversations.checkpoint import PostgresCheckpointStore
+from app.infrastructure.conversations.postgres_repository import (
+    PostgresConversationRepository,
 )
 from app.infrastructure.generation.token_counting import (
     Utf8TokenUpperBoundCounter,
@@ -65,7 +66,7 @@ def test_configured_model_runs_real_history_aware_tool_loop(
         pytest.skip("当前 .env 未配置可用于 LLM_BASE_URL 的 LLM_API_KEY")
 
     knowledge_base = _RecordingKnowledgeBase()
-    checkpoint_store = SQLiteCheckpointStore(tmp_path / "checkpoints.db")
+    checkpoint_store = PostgresCheckpointStore(pg_database(tmp_path / "checkpoints.db"))
     agent = _create_conversation_agent(
         settings.resolved_llm_api_key,
         settings.llm_base_url,
@@ -78,7 +79,7 @@ def test_configured_model_runs_real_history_aware_tool_loop(
         settings.agent_max_retrieval_calls,
     )
     service = ConversationService(
-        repository=SQLiteConversationRepository(tmp_path / "history.db"),
+        repository=PostgresConversationRepository(pg_database(tmp_path / "history.db")),
         agent=agent,
         checkpoint_store=checkpoint_store,
         history_turns=settings.conversation_history_turns,

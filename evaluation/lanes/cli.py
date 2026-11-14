@@ -111,11 +111,13 @@ def main(argv: list[str] | None = None, *, settings: Settings | None = None) -> 
             options.work_root / "evaluation.lock", resume=options.resume,
             run_id=run_id, manifest_hash=manifest.fingerprint(),
         ):
-            store = LaneRunStore(destination / "records.sqlite3", manifest)
-            return _execute(
-                config, corpus, dataset, manifest, store, destination,
-                phase=cast(EvaluationPhase, options.phase), smoke=smoke,
-            )
+            from app.bootstrap.database import Database
+            with __import__('contextlib').closing(Database(config.database_url, config.evaluation_database_schema)) as database:
+                store = LaneRunStore(database, manifest, run_id=run_id)
+                return _execute(
+                    config, corpus, dataset, manifest, store, destination,
+                    phase=cast(EvaluationPhase, options.phase), smoke=smoke,
+                )
     except KeyboardInterrupt:
         print("已中断；已持久化答案和分数保留，使用同一配置续跑。", flush=True)
         return 130
@@ -142,9 +144,10 @@ def _execute(
         runtime = build_evaluation_runtime(settings, corpus)
         root = cast(ApplicationContainer, runtime.container)
     else:
-        # 评分／完全复用不需要打开Chroma，更不能为了评分重新向量化语料。
+        # 评分／完全复用不需要打开PostgreSQL，更不能为了评分重新向量化语料。
         root = build_application_container(settings, RuntimeOptions(
-            chroma_path=settings.evaluation_chroma_path,
+            database_schema=settings.evaluation_database_schema,
+            artifacts_path=settings.evaluation_artifacts_path,
             collection_name=(
                 f"{settings.evaluation_collection_prefix}_"
                 f"{manifest.index_fingerprint[:12]}"

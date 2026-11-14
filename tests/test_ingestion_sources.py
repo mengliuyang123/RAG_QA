@@ -36,7 +36,8 @@ def test_source_survives_reopen_and_snapshot_cannot_change_with_original(tmp_pat
     sources.persist(submission, CONTENT)
     original = tmp_path / "docs" / f"{submission.doc_id}_guide.md"
     assert original.read_bytes() == CONTENT
-    assert original.stat().st_mode & 0o077 == 0
+    if os.name != "nt":  # Windows 没有 POSIX 权限位
+        assert original.stat().st_mode & 0o077 == 0
     reopened = LocalIngestionSources(tmp_path / "docs")
     with reopened.verified_snapshot(submission) as snapshot:
         assert snapshot.read_bytes() == CONTENT
@@ -113,6 +114,7 @@ def test_parser_io_error_is_not_misclassified_as_bad_source(tmp_path: Path) -> N
             raise OSError("parser disk error")
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows 不支持 FIFO")
 def test_recovery_rejects_fifo_without_blocking_open(tmp_path: Path) -> None:
     """恢复不能在fstat之前因打开FIFO永久阻塞，导致无法安全关闭服务。
 

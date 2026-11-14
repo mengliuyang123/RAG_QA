@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""只描述SQLite键集位置；游标不能替代归属校验。"""
+"""只描述PostgreSQL键集位置；游标不能替代归属校验。"""
 
 import base64
 import hashlib

@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """评分失败后的实际续跑必须复用生成结果，不重新消费检索与生成。"""
 
@@ -70,7 +71,7 @@ def test_failed_judging_resumes_without_regenerating_answers(tmp_path: Path) -> 
             judge_configuration_sha256="4" * 64,
             selections=(("resume", "auto"),), strategy=RetrievalStrategy.HYBRID,
         )
-        store = LaneRunStore(tmp_path / "run.sqlite3", manifest)
+        store = LaneRunStore(pg_database(tmp_path / "run.db"), manifest)
         runner = LaneEpisodeRunner(
             root.query_orchestrator, root.history_window,
             root.trace_repository, root.cleanup_temporary_execution,

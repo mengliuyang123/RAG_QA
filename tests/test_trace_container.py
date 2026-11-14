@@ -1,3 +1,5 @@
+from app.bootstrap.container import _UNSET
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """组合根必须隔离追踪、会话和checkpoint，不因评估覆盖不全触碰生产库。"""
 
@@ -13,11 +15,11 @@ from app.config import Settings
 def _settings(tmp_path: Path) -> Settings:
     return Settings(
         _env_file=None,
-        conversation_db_path=tmp_path / "production-conversations.sqlite3",
-        agent_checkpoint_db_path=tmp_path / "production-checkpoints.sqlite3",
-        knowledge_base_db_path=tmp_path / "production-catalog.sqlite3",
-        trace_db_path=tmp_path / "production-traces.sqlite3",
-        auth_db_path=tmp_path / "production-auth.sqlite3",
+
+
+
+
+
     )
 
 
@@ -30,9 +32,9 @@ def test_trace_is_lazy_shared_and_independent_of_model_credentials(tmp_path: Pat
     settings = _settings(tmp_path)
     container = build_application_container(settings)
     try:
-        assert not settings.trace_db_path.exists()
+        assert container._trace_repository_slot.value is _UNSET
         assert container.trace_service is container.trace_service
-        assert settings.trace_db_path.exists()
+        assert container._trace_repository_slot.value is not _UNSET
     finally:
         container.close()
 
@@ -46,7 +48,7 @@ def test_chroma_runtime_override_isolates_all_request_databases(tmp_path: Path) 
     settings = _settings(tmp_path)
     container = build_application_container(
         settings,
-        RuntimeOptions(chroma_path=tmp_path / "evaluation", collection_name="one"),
+        RuntimeOptions(artifacts_path=tmp_path / "evaluation", collection_name="one"),
     )
     try:
         conversation = container.conversation_service.create()
@@ -60,11 +62,6 @@ def test_chroma_runtime_override_isolates_all_request_databases(tmp_path: Path) 
         feedback = container.feedback_admin_service.list(uuid4())
         assert feedback.feedback == ()
         assert container.auth_service is container.auth_service
-        for path in (
-            settings.trace_db_path, settings.conversation_db_path,
-            settings.agent_checkpoint_db_path, settings.knowledge_base_db_path,
-            settings.auth_db_path,
-        ):
-            assert not path.exists()
+        assert container.database.schema != settings.database_schema
     finally:
         container.close()

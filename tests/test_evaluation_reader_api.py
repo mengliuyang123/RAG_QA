@@ -1,3 +1,4 @@
+from app.bootstrap.container import _UNSET
 # -*- coding: utf-8 -*-
 """后台只读已发布评估，不误报旧文件、预览或未完成运行。"""
 
@@ -68,7 +69,10 @@ async def test_latest_uses_real_publication_and_matching_schema(
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("kind", [
-    "broken", "preview", "incomplete", "oversize", "directory", "symlink", "fifo",
+    "broken", "preview", "incomplete", "oversize", "directory", "symlink",
+    pytest.param(
+        "fifo", marks=pytest.mark.skipif(os.name == "nt", reason="Windows 不支持 FIFO"),
+    ),
 ])
 async def test_invalid_latest_is_unavailable_not_empty(
     tmp_path: Path, kind: str,
@@ -136,7 +140,7 @@ def test_evaluation_reader_never_falls_back_to_production_in_runtime(
     if explicit:
         override = tmp_path / "override"
     options = RuntimeOptions(
-        chroma_path=tmp_path / "isolated", collection_name="reports",
+        artifacts_path=tmp_path / "isolated", collection_name="reports",
         evaluation_results_path=override,
     )
     root = build_application_container(settings, options)
@@ -147,9 +151,9 @@ def test_evaluation_reader_never_falls_back_to_production_in_runtime(
         if override is not None:
             publish_report(report, override)
             assert root.evaluation_report_service.latest()["run_id"] == report.run_id
-        assert not settings.conversation_db_path.exists()
-        assert not settings.auth_db_path.exists()
-        assert not settings.chroma_path.exists()
-        assert not settings.trace_db_path.exists()
+        assert root._conversation_repository_slot.value is _UNSET
+        assert root._auth_service_slot.value is _UNSET
+        assert not settings.artifacts_path.exists()
+        assert root._trace_repository_slot.value is _UNSET
     finally:
         root.close()

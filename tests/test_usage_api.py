@@ -191,7 +191,8 @@ async def test_empty_usage_is_zero_but_unreadable_storage_is_not(tmp_path: Path)
         app.state.container.close()
     broken, _, _ = _app(tmp_path / "broken")
     try:
-        broken.state.container.settings.conversation_db_path.mkdir()
+        with broken.state.container.database.connection() as connection:
+            connection.execute('DROP TABLE traces CASCADE')
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=broken), base_url="http://test") as client:
             response = await client.get("/api/admin/usage")
             assert response.status_code == 503

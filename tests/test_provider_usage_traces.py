@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """用真实SDK和离线HTTP验证四类上游调用的usage，而非根据提示词估算。"""
 
@@ -18,7 +19,7 @@ from app.domain.routing import QueryUnderstanding
 from app.infrastructure.embeddings.openai_compatible import OpenAICompatibleEmbeddingProvider
 from app.infrastructure.generation.openai_compatible import OpenAICompatibleLLMProvider
 from app.infrastructure.generation.structured_output import ModelStructuredOutputProvider
-from app.infrastructure.persistence.traces import SQLiteTraceRepository
+from app.infrastructure.persistence.traces import PostgresTraceRepository
 from app.infrastructure.reranking.dashscope import RemoteReranker
 from tests.test_query_understanding import _payload
 from app.infrastructure.conversations.langgraph_agent import LangGraphConversationAgent
@@ -62,7 +63,7 @@ def test_native_provider_calls_store_only_reported_usage(tmp_path: Path) -> None
             },
         })
 
-    repository = SQLiteTraceRepository(tmp_path / "trace.sqlite3")
+    repository = PostgresTraceRepository(pg_database(tmp_path / "trace.db"))
     service = TraceService(repository)
     with httpx.Client(transport=httpx.MockTransport(handle)) as client:
         sdk = OpenAI(
@@ -124,7 +125,7 @@ def test_native_graph_generation_usage_reaches_parent_trace(tmp_path: Path) -> N
             "usage": {"prompt_tokens": 21, "completion_tokens": 5, "total_tokens": 26},
         })
 
-    repository = SQLiteTraceRepository(tmp_path / "trace.sqlite3")
+    repository = PostgresTraceRepository(pg_database(tmp_path / "trace.db"))
     with httpx.Client(transport=httpx.MockTransport(handle)) as client:
         model = ChatOpenAI(
             api_key="offline", base_url="https://provider.example/v1",
@@ -157,7 +158,7 @@ def test_timeout_keeps_failed_call_with_unknown_usage_not_zero(tmp_path: Path) -
     def handle(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("secret raw error", request=request)
 
-    repository = SQLiteTraceRepository(tmp_path / "trace.sqlite3")
+    repository = PostgresTraceRepository(pg_database(tmp_path / "trace.db"))
     with httpx.Client(transport=httpx.MockTransport(handle)) as client:
         sdk = OpenAI(
             api_key="offline", base_url="https://provider.example/v1",

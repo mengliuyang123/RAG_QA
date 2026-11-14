@@ -1,8 +1,10 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """真实认证存储、可撤销会话和防暴力破解规则，不依赖HTTP替身。"""
 
 import hashlib
-import sqlite3
+import psycopg
+from app.infrastructure.persistence.database import record_row, Record
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
@@ -15,7 +17,7 @@ from app.application.errors import InvalidCredentialsError
 from app.application.errors import LoginRateLimitError
 from app.application.errors import UnauthenticatedError
 from app.infrastructure.auth.passwords import Argon2PasswordHasher
-from app.infrastructure.auth.sqlite_repository import SQLiteAuthRepository
+from app.infrastructure.auth.postgres_repository import PostgresAuthRepository
 
 
 PASSWORD = "offline-passphrase-12345"
@@ -23,7 +25,7 @@ PASSWORD = "offline-passphrase-12345"
 
 def _service(tmp_path: Path, **options: object) -> AuthService:
     return AuthService(
-        SQLiteAuthRepository(tmp_path / "auth.sqlite3"),
+        PostgresAuthRepository(pg_database(tmp_path / "auth.db")),
         Argon2PasswordHasher(), **options,
     )
 
@@ -41,12 +43,12 @@ def test_login_uses_salted_hash_and_stores_only_session_digests(tmp_path: Path) 
     assert authenticated.user.id == user.id
     assert authenticated.user.name == "小刘"
     assert authenticated.user.role == "member"
-    with sqlite3.connect(tmp_path / "auth.sqlite3") as connection:
+    with pg_connect(tmp_path / "auth.db") as connection:
         encoded = connection.execute("SELECT password_hash FROM users").fetchone()[0]
         stored = connection.execute("SELECT token_hash, csrf_hash FROM auth_sessions").fetchone()
     assert encoded.startswith("$argon2id$")
     assert PASSWORD not in encoded
-    assert stored == (
+    assert tuple(stored.values()) == (
         hashlib.sha256(logged.session_token.encode()).hexdigest(),
         hashlib.sha256(logged.csrf_token.encode()).hexdigest(),
     )
@@ -103,8 +105,8 @@ def test_expiry_idle_timeout_and_disabled_user_are_enforced(tmp_path: Path) -> N
     with pytest.raises(UnauthenticatedError):
         service.authenticate(logged.session_token)
     fresh = service.login("alice", PASSWORD, client_id="offline")
-    with sqlite3.connect(tmp_path / "auth.sqlite3") as connection:
-        connection.execute("UPDATE users SET disabled = 1 WHERE id = ?", (str(user.id),))
+    with pg_connect(tmp_path / "auth.db") as connection:
+        connection.execute("UPDATE users SET disabled = 1 WHERE id = %s", (str(user.id),))
     with pytest.raises(UnauthenticatedError):
         service.authenticate(fresh.session_token)
 

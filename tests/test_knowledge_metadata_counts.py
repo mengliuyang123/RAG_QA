@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """目录统计不读取全文或向量，按稳定文档身份计数而非按chunk计数。"""
 
@@ -8,7 +9,7 @@ import pytest
 
 from app.domain.documents import DocumentChunk
 from app.application.errors import VectorStoreError
-from app.infrastructure.vectorstores.chroma import ChromaVectorStore
+from app.infrastructure.vectorstores.postgres import PostgresVectorStore
 
 
 def test_count_scans_metadata_in_pages_and_deduplicates_documents(
@@ -20,7 +21,7 @@ def test_count_scans_metadata_in_pages_and_deduplicates_documents(
         tmp_path: 真实Chroma临时目录。
         monkeypatch: 只拦截不允许的读载荷，实际存储仍然运行。
     """
-    store = ChromaVectorStore(tmp_path / "chroma", "metadata-counts")
+    store = PostgresVectorStore(pg_database(tmp_path / "chroma"), "metadata-counts")
     first, second, third = str(uuid4()), str(uuid4()), str(uuid4())
     chunks = []
     for index in range(1001):
@@ -34,17 +35,11 @@ def test_count_scans_metadata_in_pages_and_deduplicates_documents(
                       page=None, text="PRIVATE_BODY", chunk_index=0),
     ])
     store.add_chunks(chunks, [[1.0, 0.0] for _ in chunks])
-    original = store._collection.get
-
-    def metadata_only(*args: object, **kwargs: object):
-        if kwargs.get("include") != ["metadatas"]:
-            raise AssertionError("目录统计不能读取正文或向量")
-        if not 1 <= kwargs.get("limit", 0) <= 1000:
-            raise AssertionError("目录统计必须有界分页")
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(store._collection, "get", metadata_only)
-    assert store.count_documents_by_kb() == {"ops": 2, "default": 1}
+    from tests.postgres_support import observe_queries
+    def guard(query):
+        assert 'embedding' not in query and 'SELECT *' not in query and ',text' not in query
+    with observe_queries(store._database, guard):
+        assert store.count_documents_by_kb() == {"ops": 2, "default": 1}
 
 
 def test_document_with_inconsistent_kb_cannot_be_counted_twice(tmp_path: Path) -> None:
@@ -53,7 +48,7 @@ def test_document_with_inconsistent_kb_cannot_be_counted_twice(tmp_path: Path) -
     Args:
         tmp_path: 真实Chroma隔离目录。
     """
-    store = ChromaVectorStore(tmp_path / "chroma", "inconsistent-metadata")
+    store = PostgresVectorStore(pg_database(tmp_path / "chroma"), "inconsistent-metadata")
     identifier = str(uuid4())
     chunks = []
     for index, kb_id in enumerate(("default", "ops")):

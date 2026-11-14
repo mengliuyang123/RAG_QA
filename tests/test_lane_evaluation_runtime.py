@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """分通道评估必须执行真实编排器、真实历史窗口和隔离追踪。"""
 
@@ -57,7 +58,7 @@ def test_episode_executes_production_lane_and_keeps_strategy_separate(
         assert record.trace.question is None
         assert len(record.query_hashes) == 1
         assert "needle" not in json.dumps(record.query_hashes)
-        assert not (tmp_path / "conversations.sqlite3").exists()
+        assert not (tmp_path / "conversations.db").exists()
         if policy == "agent":
             config = {"configurable": {"thread_id": str(record.execution_id)}}
             store = root._get_conversation_checkpoint_store()

@@ -1,7 +1,9 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """SQLite 正式会话历史 repository 测试。"""
 
-import sqlite3
+import psycopg
+from app.infrastructure.persistence.database import record_row, Record
 from pathlib import Path
 
 import pytest
@@ -12,8 +14,8 @@ from app.domain.conversations import AgentResult
 from app.domain.conversations import AnswerMode
 from app.domain.conversations import ConversationStatus
 from app.domain.conversations import TurnCitation
-from app.infrastructure.conversations.sqlite_repository import (
-    SQLiteConversationRepository,
+from app.infrastructure.conversations.postgres_repository import (
+    PostgresConversationRepository,
 )
 
 
@@ -46,8 +48,8 @@ def _direct_result(answer: str = "你好。") -> AgentResult:
 def test_repository_persists_crud_title_citations_and_recent_history(
     tmp_path: Path,
 ) -> None:
-    path = tmp_path / "nested" / "conversations.sqlite3"
-    repository = SQLiteConversationRepository(path)
+    path = tmp_path / "nested" / "conversations.db"
+    repository = PostgresConversationRepository(pg_database(path))
     conversation = repository.create()
 
     assert conversation.title == "新对话"
@@ -67,7 +69,7 @@ def test_repository_persists_crud_title_citations_and_recent_history(
         8.0,
     )
 
-    reopened = SQLiteConversationRepository(path)
+    reopened = PostgresConversationRepository(pg_database(path))
     loaded = reopened.get(conversation.id)
     assert loaded.title == "LangGraph 是什么？"
     assert loaded.turns_count == 2
@@ -80,7 +82,7 @@ def test_repository_persists_crud_title_citations_and_recent_history(
 def test_repository_lists_active_conversations_by_recent_update(
     tmp_path: Path,
 ) -> None:
-    repository = SQLiteConversationRepository(tmp_path / "conversations.db")
+    repository = PostgresConversationRepository(pg_database(tmp_path / "conversations.db"))
     older = repository.create()
     newer = repository.create()
     repository.save_turn(older.id, "更新旧会话", _direct_result(), 1.0)
@@ -95,7 +97,7 @@ def test_repository_lists_active_conversations_by_recent_update(
 def test_first_title_is_unicode_safe_and_never_replaced(
     tmp_path: Path,
 ) -> None:
-    repository = SQLiteConversationRepository(tmp_path / "conversations.db")
+    repository = PostgresConversationRepository(pg_database(tmp_path / "conversations.db"))
     conversation = repository.create()
     question = "你" * 60
 
@@ -114,7 +116,7 @@ def test_first_title_is_unicode_safe_and_never_replaced(
 
 def test_delete_cascades_turns_and_citations(tmp_path: Path) -> None:
     path = tmp_path / "conversations.db"
-    repository = SQLiteConversationRepository(path)
+    repository = PostgresConversationRepository(pg_database(path))
     conversation = repository.create()
     repository.save_turn(
         conversation.id,
@@ -128,7 +130,7 @@ def test_delete_cascades_turns_and_citations(tmp_path: Path) -> None:
 
     with pytest.raises(ConversationNotFoundError):
         repository.get(conversation.id)
-    with sqlite3.connect(path) as connection:
+    with pg_connect(path) as connection:
         turns = connection.execute(
             "SELECT COUNT(*) FROM conversation_turns"
         ).fetchone()[0]
@@ -142,13 +144,13 @@ def test_save_turn_rolls_back_all_changes_when_citation_insert_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    repository = SQLiteConversationRepository(tmp_path / "conversations.db")
+    repository = PostgresConversationRepository(pg_database(tmp_path / "conversations.db"))
     conversation = repository.create()
 
     def fail_insert(*args: object, **kwargs: object) -> None:
         del args
         del kwargs
-        raise sqlite3.DatabaseError("private database detail")
+        raise psycopg.DatabaseError("private database detail")
 
     monkeypatch.setattr(repository, "_insert_citations", fail_insert)
 
@@ -169,7 +171,7 @@ def test_save_turn_rolls_back_all_changes_when_citation_insert_fails(
 def test_repository_rejects_missing_conversation_and_invalid_limit(
     tmp_path: Path,
 ) -> None:
-    repository = SQLiteConversationRepository(tmp_path / "conversations.db")
+    repository = PostgresConversationRepository(pg_database(tmp_path / "conversations.db"))
 
     with pytest.raises(ConversationNotFoundError):
         repository.get(__import__("uuid").uuid4())

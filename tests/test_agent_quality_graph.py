@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """通过真实 LangGraph 验证证据判断、补查和答案修复。"""
 
@@ -28,8 +29,8 @@ from app.infrastructure.conversations.langgraph_agent import (
     AGENT_REFUSAL_ANSWER,
     LangGraphConversationAgent,
 )
-from app.infrastructure.conversations.sqlite_repository import (
-    SQLiteConversationRepository,
+from app.infrastructure.conversations.postgres_repository import (
+    PostgresConversationRepository,
 )
 
 
@@ -764,7 +765,7 @@ def test_grouped_tools_deduplicate_queries_and_preserve_message_pairs() -> None:
 def test_quality_error_never_saves_a_successful_turn(
     tmp_path: Path, streaming: bool,
 ) -> None:
-    repository = SQLiteConversationRepository(tmp_path / "history.db")
+    repository = PostgresConversationRepository(pg_database(tmp_path / "history.db"))
     conversation = repository.create()
     saver = InMemorySaver()
     model = _Model([

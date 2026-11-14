@@ -1,3 +1,5 @@
+from app.bootstrap.container import _UNSET
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """组合根任务服务的惰性装配、真实kb归属及运行时源文件隔离。"""
 
@@ -17,12 +19,12 @@ from tests.test_job_ingestion_pipeline import BatchEmbedder
 def _settings(tmp_path: Path) -> Settings:
     return Settings(
         _env_file=None, docs_path=tmp_path / "production-docs",
-        chroma_path=tmp_path / "production-chroma",
-        knowledge_base_db_path=tmp_path / "production.sqlite3",
-        conversation_db_path=tmp_path / "conversations.sqlite3",
-        trace_db_path=tmp_path / "traces.sqlite3",
-        auth_db_path=tmp_path / "auth.sqlite3",
-        agent_checkpoint_db_path=tmp_path / "checkpoints.sqlite3",
+        artifacts_path=tmp_path / "production-chroma",
+
+
+
+
+
         llm_api_key=None,
         embedding_api_key=None,
         openai_api_key=None,
@@ -45,7 +47,7 @@ def test_submit_and_read_job_do_not_initialize_models_or_indexes(tmp_path: Path)
         assert queued.status == "queued"
         assert service is root.ingestion_job_service
         assert service.get(queued.job_id).status == "queued"
-        assert not settings.chroma_path.exists()
+        assert not settings.artifacts_path.exists()
         assert (settings.docs_path / f"{queued.doc_id}_guide.txt").is_file()
     finally:
         root.close()
@@ -87,18 +89,18 @@ def test_runtime_job_sources_never_write_production_docs(tmp_path: Path) -> None
     """
     settings = _settings(tmp_path)
     first = build_application_container(settings, RuntimeOptions(
-        chroma_path=tmp_path / "evaluation", collection_name="first",
+        artifacts_path=tmp_path / "evaluation", collection_name="first",
     ))
     second = build_application_container(settings, RuntimeOptions(
-        chroma_path=tmp_path / "evaluation", collection_name="second",
+        artifacts_path=tmp_path / "evaluation", collection_name="second",
     ))
     try:
         queued = first.ingestion_job_service.submit("default", "guide.md", b"payload", uuid4())
         assert first.ingestion_job_service.get(queued.job_id).status == "queued"
         assert second.ingestion_job_repository.unpublished_document_ids() == ()
         assert not settings.docs_path.exists()
-        assert not settings.knowledge_base_db_path.exists()
-        assert not settings.chroma_path.exists()
+        assert first.database.schema != second.database.schema
+        assert not settings.artifacts_path.exists()
         assert len(list((tmp_path / "evaluation").rglob(f"{queued.doc_id}_guide.md"))) == 1
     finally:
         first.close()

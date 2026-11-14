@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """分通道记录须持久化复用，配置变化不得误用成功缓存。"""
 
@@ -42,9 +43,9 @@ def test_reopened_store_restores_answers_without_internal_queries(
             selections=(("checkpoint", "auto"),),
             strategy=RetrievalStrategy.HYBRID,
         )
-        path = tmp_path / "run" / "lanes.sqlite3"
-        LaneRunStore(path, manifest).save(record)
-        reopened = LaneRunStore(path, manifest)
+        path = tmp_path / "run" / "lanes.db"
+        LaneRunStore(pg_database(path), manifest).save(record)
+        reopened = LaneRunStore(pg_database(path), manifest)
         cached = reopened.load("checkpoint", "auto")
         assert len(cached) == 1
         assert cached[0].result.answer == "资料[1]"
@@ -68,7 +69,7 @@ def test_reopened_store_restores_answers_without_internal_queries(
         assert reopened.load_score("checkpoint", "auto", 0) is None
         reopened.save_score(score)
         reopened.save_score(score)
-        restored_score = LaneRunStore(path, manifest).load_score("checkpoint", "auto", 0)
+        restored_score = LaneRunStore(pg_database(path), manifest).load_score("checkpoint", "auto", 0)
         assert restored_score.source_trace_id == record.trace.trace_id
         assert restored_score.judgement.correctness == 0.4
         with pytest.raises(ValueError, match="对应"):
@@ -88,10 +89,10 @@ def test_reopened_store_restores_answers_without_internal_queries(
         ):
             changed = manifest.model_copy(update={key: value})
             with pytest.raises(ValueError, match="指纹"):
-                LaneRunStore(path, changed)
+                LaneRunStore(pg_database(path), changed)
         assert reopened.load("checkpoint", "agent") == ()
         expired = LaneRunStore(
-            path, manifest, clock=lambda: record.trace.expires_at,
+            pg_database(path), manifest, clock=lambda: record.trace.expires_at,
         )
         assert expired.load("checkpoint", "auto") == ()
         assert expired.load_score("checkpoint", "auto", 0) is None
@@ -128,7 +129,7 @@ def test_store_rejects_unselected_record_before_insertion(tmp_path: Path) -> Non
             judge_configuration_sha256="4" * 64,
             selections=(("allowed", "auto"),), strategy=RetrievalStrategy.VECTOR,
         )
-        store = LaneRunStore(tmp_path / "lanes.sqlite3", manifest)
+        store = LaneRunStore(pg_database(tmp_path / "lanes.db"), manifest)
         with pytest.raises(ValueError, match="策略"):
             store.save(record)
         assert store.load("allowed", "auto") == ()

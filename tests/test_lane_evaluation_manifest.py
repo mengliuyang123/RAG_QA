@@ -3,14 +3,21 @@
 
 from pathlib import Path
 
+import pytest
+
 from app.config import Settings
 from evaluation.datasets import load_corpus
 from evaluation.lanes.dataset import load_lane_dataset
+from tests.corpus_state import CORPUS_MISSING_REASON
+from tests.corpus_state import evaluation_corpus_complete
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.skipif(
+    not evaluation_corpus_complete(), reason=CORPUS_MISSING_REASON,
+)
 def test_actual_manifest_changes_for_models_dirty_code_and_judge_not_keys(
     tmp_path: Path,
 ) -> None:

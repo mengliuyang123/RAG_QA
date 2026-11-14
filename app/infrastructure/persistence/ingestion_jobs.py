@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
-"""SQLite有界任务队列；租约栅栏与最终发布状态在同一事务提交。"""
+"""Postgres有界任务队列；租约栅栏与最终发布状态在同一事务提交。"""
 
-import sqlite3
+import psycopg
+from app.infrastructure.persistence.database import Database, Record
 from collections.abc import Callable
 from collections.abc import Iterator
 from contextlib import closing
@@ -40,92 +41,17 @@ def _positive_integer(value: int, label: str) -> None:
         raise ValueError(f"{label}必须为正整数")
 
 
-def has_pending_ingestion_jobs(path: Path) -> bool:
-    """只读探测既有任务库；空闲健康检查不能隐式创建表或调用模型。
-
-    Args:
-        path: 组合根派生的本运行时目录数据库。
-
-    Returns:
-        是否有queued或running任务；缺库／尚无任务表时为False。
-    """
-    if not path.exists():
-        return False
-    try:
-        uri = path.resolve().as_uri() + "?mode=ro"
-        with closing(sqlite3.connect(uri, uri=True, timeout=5.0)) as connection:
-            table = connection.execute(
-                "SELECT 1 FROM sqlite_master "
-                "WHERE type='table' AND name='ingestion_jobs'",
-            ).fetchone()
-            if table is None:
-                return False
-            pending = connection.execute(
-                "SELECT 1 FROM ingestion_jobs "
-                "WHERE status IN ('queued', 'running') LIMIT 1",
-            ).fetchone()
-            return pending is not None
-    except (OSError, sqlite3.Error) as error:
-        raise IngestionJobStorageError("入库队列探测暂时不可用") from error
+def has_pending_ingestion_jobs(database: Database) -> bool:
+    with database.connection(read_only=True) as connection:
+        return connection.execute("SELECT 1 FROM ingestion_jobs WHERE status IN ('queued','running') LIMIT 1").fetchone() is not None
 
 
-class SQLiteIngestionJobRepository:
+class PostgresIngestionJobRepository:
     """不持有长连接，BEGIN IMMEDIATE序列化容量、认领与状态转换。"""
 
-    def __init__(
-        self, path: Path, *, clock: Callable[[], datetime] = _utc_now,
-    ) -> None:
-        """创建任务表，不修改目录、源文件或模型索引。
-
-        Args:
-            path: 已有知识库目录数据库的隔离路径。
-            clock: 用于持久UTC时间与租约校验的服务器时钟。
-
-        Returns:
-            None。
-        """
-        self._path = path
+    def __init__(self, database: Database, clock: Callable[[], datetime] = _utc_now) -> None:
+        self._database = database
         self._clock = clock
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with self._connection() as connection:
-                connection.execute("""
-                    CREATE TABLE IF NOT EXISTS ingestion_jobs (
-                        job_id TEXT PRIMARY KEY,
-                        doc_id TEXT NOT NULL UNIQUE,
-                        kb_id TEXT NOT NULL,
-                        filename TEXT NOT NULL,
-                        size_bytes INTEGER NOT NULL CHECK(size_bytes > 0),
-                        uploaded_by TEXT NOT NULL,
-                        content_sha256 TEXT NOT NULL,
-                        status TEXT NOT NULL CHECK(status IN (
-                            'queued', 'running', 'succeeded', 'failed'
-                        )),
-                        stage TEXT NOT NULL CHECK(stage IN (
-                            'parsing', 'chunking', 'embedding', 'indexing'
-                        )),
-                        progress REAL NOT NULL CHECK(
-                            progress >= 0 AND progress <= 1
-                        ),
-                        completed_batches INTEGER NOT NULL DEFAULT 0,
-                        total_batches INTEGER NOT NULL DEFAULT 0,
-                        chunks_count INTEGER,
-                        error_code TEXT,
-                        created_at TEXT NOT NULL,
-                        updated_at TEXT NOT NULL,
-                        attempt INTEGER NOT NULL DEFAULT 0,
-                        lease_token TEXT,
-                        lease_expires_at TEXT,
-                        FOREIGN KEY(kb_id) REFERENCES knowledge_bases(id)
-                            ON DELETE RESTRICT
-                    )
-                """)
-                connection.execute("""
-                    CREATE INDEX IF NOT EXISTS ingestion_jobs_pending
-                    ON ingestion_jobs(status, lease_expires_at, created_at)
-                """)
-        except OSError as error:
-            raise IngestionJobStorageError("任务登记初始化失败") from error
 
     def list_knowledge_base_jobs(self, kb_id: str) -> tuple[DocumentJobInfo, ...]:
         """读取同库全部真实任务，失败源也不能在强制删除时遗失。
@@ -138,7 +64,7 @@ class SQLiteIngestionJobRepository:
         """
         with self._connection() as connection:
             rows = connection.execute(
-                "SELECT * FROM ingestion_jobs WHERE kb_id = ? ORDER BY doc_id",
+                "SELECT * FROM ingestion_jobs WHERE kb_id = %s ORDER BY doc_id",
                 (kb_id,),
             ).fetchall()
         result = []
@@ -166,31 +92,24 @@ class SQLiteIngestionJobRepository:
         result = {}
         connection = None
         try:
-            connection = sqlite3.connect(
-                self._path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5,
-            )
-            connection.row_factory = sqlite3.Row
-            connection.execute("BEGIN")
-            for offset in range(0, len(identifiers), 100):
-                batch = identifiers[offset:offset + 100]
-                placeholders = ",".join("?" for _ in batch)
-                rows = connection.execute(
-                    "SELECT * FROM ingestion_jobs WHERE doc_id IN (" + placeholders + ")",
-                    tuple(str(identifier) for identifier in batch),
-                ).fetchall()
-                for row in rows:
-                    job = self._job(row)
-                    submission = self._submission(row)
-                    result[job.doc_id] = DocumentJobInfo(
-                        doc_id=job.doc_id, kb_id=job.kb_id, filename=job.filename,
-                        uploaded_by=submission.uploaded_by, status=job.status,
-                    )
-            return result
-        except (sqlite3.Error, OSError, ValueError) as error:
+            with self._database.connection(read_only=True) as connection:
+                for offset in range(0, len(identifiers), 100):
+                    batch = identifiers[offset:offset + 100]
+                    placeholders = ",".join("%s" for _ in batch)
+                    rows = connection.execute(
+                        "SELECT * FROM ingestion_jobs WHERE doc_id IN (" + placeholders + ")",
+                        tuple(str(identifier) for identifier in batch),
+                    ).fetchall()
+                    for row in rows:
+                        job = self._job(row)
+                        submission = self._submission(row)
+                        result[job.doc_id] = DocumentJobInfo(
+                            doc_id=job.doc_id, kb_id=job.kb_id, filename=job.filename,
+                            uploaded_by=submission.uploaded_by, status=job.status,
+                        )
+                return result
+        except (psycopg.Error, OSError, ValueError) as error:
             raise IngestionJobStorageError("文档任务元数据暂时不可用") from error
-        finally:
-            if connection is not None:
-                connection.close()
 
     def enqueue(
         self, submission: IngestionJobSubmission, *, capacity: int,
@@ -210,15 +129,15 @@ class SQLiteIngestionJobRepository:
         )
         now = self._now().isoformat()
         with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || 'business_write', 0))")
             exists = connection.execute(
-                "SELECT 1 FROM knowledge_bases WHERE id = ? AND lifecycle = 'active'",
+                "SELECT 1 FROM knowledge_bases WHERE id = %s AND lifecycle = 'active'",
                 (submission.kb_id,),
             ).fetchone()
             if exists is None:
                 raise KnowledgeBaseNotFoundError("知识库不存在")
             duplicate = connection.execute(
-                "SELECT 1 FROM ingestion_jobs WHERE job_id = ? OR doc_id = ?",
+                "SELECT 1 FROM ingestion_jobs WHERE job_id = %s OR doc_id = %s",
                 (submission.job_id, str(submission.doc_id)),
             ).fetchone()
             if duplicate is not None:
@@ -234,7 +153,7 @@ class SQLiteIngestionJobRepository:
                     job_id, doc_id, kb_id, filename, size_bytes, uploaded_by,
                     content_sha256, status, stage, progress,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', 'parsing', 0, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'queued', 'parsing', 0, %s, %s)
             """, (
                 submission.job_id, str(submission.doc_id), submission.kb_id,
                 submission.filename, submission.size_bytes,
@@ -268,12 +187,12 @@ class SQLiteIngestionJobRepository:
         now = self._now()
         expires = now + timedelta(seconds=lease_seconds)
         with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || 'business_write', 0))")
             row = connection.execute("""
                 SELECT * FROM ingestion_jobs
                 WHERE status = 'queued' OR (
-                    status = 'running' AND lease_expires_at <= ?
-                ) ORDER BY created_at, job_id LIMIT 1
+                    status = 'running' AND lease_expires_at <= %s
+                ) ORDER BY created_at, job_id LIMIT 1 FOR UPDATE SKIP LOCKED
             """, (now.isoformat(),)).fetchone()
             if row is None:
                 return None
@@ -285,9 +204,9 @@ class SQLiteIngestionJobRepository:
             connection.execute("""
                 UPDATE ingestion_jobs SET status='running', stage='parsing',
                     progress=0, completed_batches=0, total_batches=0,
-                    chunks_count=NULL, error_code=NULL, updated_at=?,
-                    attempt=?, lease_token=?, lease_expires_at=?
-                WHERE job_id=?
+                    chunks_count=NULL, error_code=NULL, updated_at=%s,
+                    attempt=%s, lease_token=%s, lease_expires_at=%s
+                WHERE job_id=%s
             """, (
                 now.isoformat(), attempt, str(token), expires.isoformat(),
                 submission.job_id,
@@ -316,7 +235,7 @@ class SQLiteIngestionJobRepository:
         self._validate_batches(stage, completed_batches, total_batches)
         now = self._now()
         with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || 'business_write', 0))")
             row = self._active(connection, claim, now)
             if STAGES.index(stage) < STAGES.index(row["stage"]):
                 raise IngestionJobConflictError("入库阶段不能回退")
@@ -334,9 +253,9 @@ class SQLiteIngestionJobRepository:
                 total_batches = row["total_batches"]
             progress = self._progress(stage, completed_batches, total_batches)
             connection.execute("""
-                UPDATE ingestion_jobs SET stage=?, progress=?,
-                    completed_batches=?, total_batches=?, updated_at=?
-                WHERE job_id=?
+                UPDATE ingestion_jobs SET stage=%s, progress=%s,
+                    completed_batches=%s, total_batches=%s, updated_at=%s
+                WHERE job_id=%s
             """, (
                 stage, progress, completed_batches, total_batches,
                 now.isoformat(), claim.job.job_id,
@@ -357,12 +276,12 @@ class SQLiteIngestionJobRepository:
         now = self._now()
         expires = now + timedelta(seconds=lease_seconds)
         with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || 'business_write', 0))")
             row = self._active(connection, claim, now)
             current_expiry = datetime.fromisoformat(row["lease_expires_at"])
             expires = max(expires, current_expiry)
             connection.execute(
-                "UPDATE ingestion_jobs SET lease_expires_at=? WHERE job_id=?",
+                "UPDATE ingestion_jobs SET lease_expires_at=%s WHERE job_id=%s",
                 (expires.isoformat(), claim.job.job_id),
             )
 
@@ -381,7 +300,7 @@ class SQLiteIngestionJobRepository:
         _positive_integer(chunks_count, "块数")
         now = self._now()
         with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || 'business_write', 0))")
             row = self._active(connection, claim, now)
             if row["stage"] != "indexing" or row["total_batches"] <= 0:
                 raise IngestionJobConflictError("任务尚未进入完整索引发布阶段")
@@ -389,8 +308,8 @@ class SQLiteIngestionJobRepository:
                 raise IngestionJobConflictError("任务批次尚未完成")
             connection.execute("""
                 UPDATE ingestion_jobs SET status='succeeded', progress=1,
-                    chunks_count=?, updated_at=?, lease_token=NULL,
-                    lease_expires_at=NULL WHERE job_id=?
+                    chunks_count=%s, updated_at=%s, lease_token=NULL,
+                    lease_expires_at=NULL WHERE job_id=%s
             """, (chunks_count, now.isoformat(), claim.job.job_id))
             return self._job(self._row(connection, claim.job.job_id))
 
@@ -410,12 +329,12 @@ class SQLiteIngestionJobRepository:
             raise ValueError("入库失败分类无效")
         now = self._now()
         with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || 'business_write', 0))")
             self._active(connection, claim, now)
             connection.execute("""
-                UPDATE ingestion_jobs SET status='failed', error_code=?,
-                    updated_at=?, lease_token=NULL, lease_expires_at=NULL
-                WHERE job_id=?
+                UPDATE ingestion_jobs SET status='failed', error_code=%s,
+                    updated_at=%s, lease_token=NULL, lease_expires_at=NULL
+                WHERE job_id=%s
             """, (code, now.isoformat(), claim.job.job_id))
             return self._job(self._row(connection, claim.job.job_id))
 
@@ -475,18 +394,18 @@ class SQLiteIngestionJobRepository:
         return 0.95
 
     @staticmethod
-    def _row(connection: sqlite3.Connection, job_id: str) -> sqlite3.Row:
+    def _row(connection: psycopg.Connection, job_id: str) -> Record:
         row = connection.execute(
-            "SELECT * FROM ingestion_jobs WHERE job_id=?", (job_id,),
+            "SELECT * FROM ingestion_jobs WHERE job_id=%s", (job_id,),
         ).fetchone()
         if row is None:
             raise IngestionJobNotFoundError("入库任务不存在")
         return row
 
     def _active(
-        self, connection: sqlite3.Connection, claim: IngestionJobClaim,
+        self, connection: psycopg.Connection, claim: IngestionJobClaim,
         now: datetime,
-    ) -> sqlite3.Row:
+    ) -> Record:
         row = self._row(connection, claim.job.job_id)
         self._job(row)
         if row["status"] != "running":
@@ -504,7 +423,7 @@ class SQLiteIngestionJobRepository:
         return row
 
     @staticmethod
-    def _submission(row: sqlite3.Row) -> IngestionJobSubmission:
+    def _submission(row: Record) -> IngestionJobSubmission:
         try:
             return IngestionJobSubmission(
                 job_id=row["job_id"], doc_id=UUID(row["doc_id"]),
@@ -517,7 +436,7 @@ class SQLiteIngestionJobRepository:
             raise IngestionJobStorageError("任务提交资料无效") from error
 
     @staticmethod
-    def _job(row: sqlite3.Row) -> IngestionJob:
+    def _job(row: Record) -> IngestionJob:
         try:
             completed = row["completed_batches"]
             total = row["total_batches"]
@@ -558,13 +477,9 @@ class SQLiteIngestionJobRepository:
             raise IngestionJobStorageError("任务进度记录无效") from error
 
     @contextmanager
-    def _connection(self) -> Iterator[sqlite3.Connection]:
+    def _connection(self) -> Iterator[psycopg.Connection]:
         try:
-            database = sqlite3.connect(self._path, timeout=5.0)
-            with closing(database) as connection:
-                connection.row_factory = sqlite3.Row
-                connection.execute("PRAGMA foreign_keys = ON")
-                with connection:
-                    yield connection
-        except sqlite3.Error as error:
-            raise IngestionJobStorageError("入库任务登记暂时不可用") from error
+            with self._database.connection(read_only=False) as connection:
+                yield connection
+        except psycopg.Error as exc:
+            raise IngestionJobStorageError("PostgreSQL 仓储操作失败") from exc

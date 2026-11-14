@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""认证账号、服务端会话及登录限流的独立SQLite存储。"""
+"""认证账号、服务端会话及登录限流的独立Postgres存储。"""
 
 import math
-import sqlite3
+import psycopg
+from app.infrastructure.persistence.database import Database, Record
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC
@@ -19,54 +20,13 @@ from app.domain.auth import User
 from app.domain.auth import UserAccount
 
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    username TEXT UNIQUE NOT NULL,
-    name TEXT NOT NULL,
-    password_hash TEXT NOT NULL,
-    role TEXT NOT NULL CHECK(role IN ('member', 'admin')),
-    disabled INTEGER NOT NULL DEFAULT 0,
-    created_at REAL NOT NULL
-);
-CREATE TABLE IF NOT EXISTS auth_sessions (
-    token_hash TEXT PRIMARY KEY,
-    csrf_hash TEXT NOT NULL,
-    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    created_at REAL NOT NULL,
-    expires_at REAL NOT NULL,
-    last_seen_at REAL NOT NULL
-);
-CREATE INDEX IF NOT EXISTS auth_sessions_expiry ON auth_sessions(expires_at);
-CREATE TABLE IF NOT EXISTS login_buckets (
-    bucket_key TEXT PRIMARY KEY,
-    window_start INTEGER NOT NULL,
-    attempts INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS login_buckets_window ON login_buckets(window_start);
-"""
 
 
-class SQLiteAuthRepository:
+class PostgresAuthRepository:
     """短连接、参数化事务存储，不在日志中打印认证数据。"""
 
-    def __init__(self, path: Path) -> None:
-        """初始化独立认证表，不创建任何默认账号。
-
-        Args:
-            path: 认证数据库路径。
-
-        Returns:
-            None。
-        """
-        self._path = path
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with self._connect() as connection:
-                connection.execute("PRAGMA journal_mode = WAL")
-                connection.executescript(_SCHEMA)
-        except (OSError, sqlite3.Error) as exc:
-            raise AuthStorageError("认证存储初始化失败") from exc
+    def __init__(self, database: Database) -> None:
+        self._database = database
 
     def create_user(self, account: UserAccount) -> None:
         """创建规范化且唯一的登录账号。
@@ -82,16 +42,16 @@ class SQLiteAuthRepository:
                 connection.execute(
                     """INSERT INTO users(
                         id, username, name, password_hash, role, disabled, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)""",
                     (
                         str(account.id), account.username, account.name,
                         account.password_hash, account.role, int(account.disabled),
                         account.created_at.timestamp(),
                     ),
                 )
-        except sqlite3.IntegrityError as exc:
+        except psycopg.IntegrityError as exc:
             raise UserAlreadyExistsError("登录标识已存在") from exc
-        except sqlite3.Error as exc:
+        except psycopg.Error as exc:
             raise AuthStorageError("账号创建失败") from exc
 
     def user_by_name(self, username: str) -> UserAccount | None:
@@ -106,7 +66,7 @@ class SQLiteAuthRepository:
         try:
             with self._connect() as connection:
                 row = connection.execute(
-                    "SELECT * FROM users WHERE username = ?", (username,),
+                    "SELECT * FROM users WHERE username = %s", (username,),
                 ).fetchone()
             if row is None:
                 return None
@@ -116,7 +76,7 @@ class SQLiteAuthRepository:
                 disabled=bool(row["disabled"]),
                 created_at=datetime.fromtimestamp(row["created_at"], UTC),
             )
-        except (sqlite3.Error, ValueError) as exc:
+        except (psycopg.Error, ValueError) as exc:
             raise AuthStorageError("账号读取失败") from exc
 
     def save_session(self, session: StoredSession) -> None:
@@ -130,20 +90,20 @@ class SQLiteAuthRepository:
         """
         try:
             with self._connect() as connection:
-                connection.execute("DELETE FROM auth_sessions WHERE expires_at <= ?", (
+                connection.execute("DELETE FROM auth_sessions WHERE expires_at <= %s", (
                     session.created_at.timestamp(),
                 ))
                 connection.execute(
                     """INSERT INTO auth_sessions(
                         token_hash, csrf_hash, user_id, created_at, expires_at, last_seen_at
-                    ) VALUES (?, ?, ?, ?, ?, ?)""",
+                    ) VALUES (%s, %s, %s, %s, %s, %s)""",
                     (
                         session.token_hash, session.csrf_hash, str(session.user_id),
                         session.created_at.timestamp(), session.expires_at.timestamp(),
                         session.last_seen_at.timestamp(),
                     ),
                 )
-        except sqlite3.Error as exc:
+        except psycopg.Error as exc:
             raise AuthStorageError("认证会话保存失败") from exc
 
     def resolve_session(
@@ -162,18 +122,18 @@ class SQLiteAuthRepository:
         stamp = now.timestamp()
         try:
             with self._connect() as connection:
-                connection.execute("BEGIN IMMEDIATE")
+                connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || 'business_write', 0))")
                 row = connection.execute(
                     """SELECT u.id, u.name, u.role, s.csrf_hash, s.expires_at
                     FROM auth_sessions s JOIN users u ON u.id = s.user_id
-                    WHERE s.token_hash = ? AND u.disabled = 0
-                        AND s.expires_at > ? AND s.last_seen_at > ?""",
+                    WHERE s.token_hash = %s AND u.disabled = 0
+                        AND s.expires_at > %s AND s.last_seen_at > %s""",
                     (token_hash, stamp, stamp - idle_seconds),
                 ).fetchone()
                 if row is None:
                     return None
                 connection.execute(
-                    "UPDATE auth_sessions SET last_seen_at = ? WHERE token_hash = ?",
+                    "UPDATE auth_sessions SET last_seen_at = %s WHERE token_hash = %s",
                     (stamp, token_hash),
                 )
                 return AuthenticatedSession(
@@ -181,7 +141,7 @@ class SQLiteAuthRepository:
                     csrf_hash=row["csrf_hash"],
                     expires_at=datetime.fromtimestamp(row["expires_at"], UTC),
                 )
-        except (sqlite3.Error, ValueError) as exc:
+        except (psycopg.Error, ValueError) as exc:
             raise AuthStorageError("认证会话读取失败") from exc
 
     def revoke_session(self, token_hash: str) -> None:
@@ -196,9 +156,9 @@ class SQLiteAuthRepository:
         try:
             with self._connect() as connection:
                 connection.execute(
-                    "DELETE FROM auth_sessions WHERE token_hash = ?", (token_hash,),
+                    "DELETE FROM auth_sessions WHERE token_hash = %s", (token_hash,),
                 )
-        except sqlite3.Error as exc:
+        except psycopg.Error as exc:
             raise AuthStorageError("认证会话撤销失败") from exc
 
     def consume_login_attempts(
@@ -220,11 +180,11 @@ class SQLiteAuthRepository:
         window = int(stamp // window_seconds) * window_seconds
         try:
             with self._connect() as connection:
-                connection.execute("BEGIN IMMEDIATE")
-                connection.execute("DELETE FROM login_buckets WHERE window_start < ?", (window,))
+                connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || 'business_write', 0))")
+                connection.execute("DELETE FROM login_buckets WHERE window_start < %s", (window,))
                 for key in keys:
                     row = connection.execute(
-                        "SELECT attempts FROM login_buckets WHERE bucket_key = ?",
+                        "SELECT attempts FROM login_buckets WHERE bucket_key = %s",
                         (key,),
                     ).fetchone()
                     if row is not None and row[0] >= max_attempts:
@@ -232,20 +192,17 @@ class SQLiteAuthRepository:
                 for key in keys:
                     connection.execute(
                         """INSERT INTO login_buckets(bucket_key, window_start, attempts)
-                        VALUES (?, ?, 1) ON CONFLICT(bucket_key) DO UPDATE
-                        SET attempts = attempts + 1, window_start = excluded.window_start""",
+                        VALUES (%s, %s, 1) ON CONFLICT(bucket_key) DO UPDATE
+                        SET attempts = login_buckets.attempts + 1, window_start = excluded.window_start""",
                         (key, window),
                     )
-        except sqlite3.Error as exc:
+        except psycopg.Error as exc:
             raise AuthStorageError("登录限流存储失败") from exc
 
     @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self._path, timeout=5.0)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
+    def _connect(self) -> Iterator[psycopg.Connection]:
         try:
-            with connection:
+            with self._database.connection() as connection:
                 yield connection
-        finally:
-            connection.close()
+        except psycopg.Error as exc:
+            raise AuthStorageError("PostgreSQL 仓储操作失败") from exc

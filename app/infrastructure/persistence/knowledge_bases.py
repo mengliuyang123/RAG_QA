@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
-"""使用独立SQLite保存知识库目录，兼容没有分库的旧语料。"""
+"""使用独立Postgres保存知识库目录，兼容没有分库的旧语料。"""
 
-import sqlite3
+import psycopg
+from app.infrastructure.persistence.database import Database, Record
 from collections.abc import Iterator
 from contextlib import closing
 from contextlib import contextmanager
@@ -17,56 +18,11 @@ from app.domain.knowledge_bases import KnowledgeBase
 from app.domain.knowledge_bases import KnowledgeBasePatch
 
 
-class SQLiteKnowledgeBaseRepository:
+class PostgresKnowledgeBaseRepository:
     """持久化空知识库及其描述，默认库只创建一次且不覆盖管理员修改。"""
 
-    def __init__(self, path: Path) -> None:
-        """初始化本地目录和幂等默认知识库。
-
-        Args:
-            path: 由组合根提供的独立数据库路径。
-
-        Returns:
-            None。
-        """
-        self._path = path
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            default = KnowledgeBase(
-                id=DEFAULT_KB_ID, name="默认知识库",
-                description="未分库的历史文档和默认上传文档。",
-            )
-            with self._connection() as connection:
-                # 惰性组合根可能同时创建候选，迁移必须在同一写事务内检查。
-                connection.execute("BEGIN IMMEDIATE")
-                connection.execute("""
-                    CREATE TABLE IF NOT EXISTS knowledge_bases (
-                        id TEXT PRIMARY KEY,
-                        name TEXT NOT NULL,
-                        description TEXT NOT NULL,
-                        icon TEXT,
-                        created_at TEXT NOT NULL,
-                        updated_at TEXT NOT NULL
-                    )
-                """)
-                columns = connection.execute("PRAGMA table_info(knowledge_bases)").fetchall()
-                names = {column["name"] for column in columns}
-                if "owner_name" not in names:
-                    connection.execute("ALTER TABLE knowledge_bases ADD COLUMN owner_name TEXT")
-                if "lifecycle" not in names:
-                    connection.execute(
-                        "ALTER TABLE knowledge_bases ADD COLUMN lifecycle "
-                        "TEXT NOT NULL DEFAULT 'active' "
-                        "CHECK(lifecycle IN ('active','deleting','deleted'))"
-                    )
-                connection.execute(
-                    "INSERT OR IGNORE INTO knowledge_bases "
-                    "(id, name, description, icon, created_at, updated_at, owner_name) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    self._values(default),
-                )
-        except OSError as exc:
-            raise KnowledgeBaseStorageError("知识库目录初始化失败") from exc
+    def __init__(self, database: Database) -> None:
+        self._database = database
 
     def list(self) -> list[KnowledgeBase]:
         """返回按稳定ID排序的全部目录记录。
@@ -91,7 +47,7 @@ class SQLiteKnowledgeBaseRepository:
         """
         with self._connection() as connection:
             row = connection.execute(
-                "SELECT * FROM knowledge_bases WHERE id = ? AND lifecycle = 'active'", (kb_id,),
+                "SELECT * FROM knowledge_bases WHERE id = %s AND lifecycle = 'active'", (kb_id,),
             ).fetchone()
         if row is None:
             raise KnowledgeBaseNotFoundError("知识库不存在")
@@ -112,10 +68,10 @@ class SQLiteKnowledgeBaseRepository:
                 connection.execute(
                     "INSERT INTO knowledge_bases "
                     "(id, name, description, icon, created_at, updated_at, owner_name) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s)",
                     self._values(validated),
                 )
-            except sqlite3.IntegrityError as exc:
+            except psycopg.IntegrityError as exc:
                 raise KnowledgeBaseConflictError("知识库ID已存在") from exc
         return validated
 
@@ -132,8 +88,8 @@ class SQLiteKnowledgeBaseRepository:
         with self._connection() as connection:
             result = connection.execute(
                 """UPDATE knowledge_bases
-                   SET name = ?, description = ?, icon = ?, owner_name = ?, updated_at = ?
-                   WHERE id = ? AND lifecycle = 'active'""",
+                   SET name = %s, description = %s, icon = %s, owner_name = %s, updated_at = %s
+                   WHERE id = %s AND lifecycle = 'active'""",
                 (
                     validated.name, validated.description, validated.icon,
                     validated.owner_name,
@@ -159,30 +115,27 @@ class SQLiteKnowledgeBaseRepository:
         values = []
         for name in ("name", "description", "icon", "owner_name"):
             if name in validated.model_fields_set:
-                assignments.append(f"{name} = ?")
+                assignments.append(f"{name} = %s")
                 values.append(getattr(validated, name))
-        assignments.append("updated_at = ?")
+        assignments.append("updated_at = %s")
         values.extend((datetime.now(timezone.utc).isoformat(), kb_id))
-        query = "UPDATE knowledge_bases SET " + ", ".join(assignments) + " WHERE id = ? AND lifecycle = 'active'"
+        query = "UPDATE knowledge_bases SET " + ", ".join(assignments) + " WHERE id = %s AND lifecycle = 'active'"
         with self._connection() as connection:
             result = connection.execute(query, values)
             if result.rowcount != 1:
                 raise KnowledgeBaseNotFoundError("知识库不存在")
             row = connection.execute(
-                "SELECT * FROM knowledge_bases WHERE id = ?", (kb_id,),
+                "SELECT * FROM knowledge_bases WHERE id = %s", (kb_id,),
             ).fetchone()
             return self._decode(row)
 
     @contextmanager
-    def _connection(self) -> Iterator[sqlite3.Connection]:
+    def _connection(self) -> Iterator[psycopg.Connection]:
         try:
-            with closing(sqlite3.connect(self._path, timeout=5.0)) as connection:
-                connection.execute("PRAGMA foreign_keys = ON")
-                connection.row_factory = sqlite3.Row
-                with connection:
-                    yield connection
-        except sqlite3.Error as exc:
-            raise KnowledgeBaseStorageError("知识库目录存储失败") from exc
+            with self._database.connection() as connection:
+                yield connection
+        except psycopg.Error as exc:
+            raise KnowledgeBaseStorageError("PostgreSQL 仓储操作失败") from exc
 
     @staticmethod
     def _values(knowledge_base: KnowledgeBase) -> tuple[object, ...]:
@@ -194,7 +147,7 @@ class SQLiteKnowledgeBaseRepository:
         )
 
     @staticmethod
-    def _decode(row: sqlite3.Row) -> KnowledgeBase:
+    def _decode(row: Record) -> KnowledgeBase:
         try:
             return KnowledgeBase(
                 id=row["id"], name=row["name"], description=row["description"],

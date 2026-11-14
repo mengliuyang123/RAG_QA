@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """知识库目录可供成员读取，元数据写入必须经过真实管理员与CSRF。"""
 
@@ -117,8 +118,8 @@ async def test_catalog_read_needs_no_model_credentials(tmp_path: Path) -> None:
         _env_file=None, openai_api_key=None, llm_api_key=None,
         embedding_api_key=None,
         reranker_base_url=None,
-        http_allowed_hosts=("test",), chroma_path=tmp_path / "chroma",
-        knowledge_base_db_path=tmp_path / "catalog.sqlite3",
+        http_allowed_hosts=("test",), artifacts_path=tmp_path / "chroma",
+
     )
     app = create_app(settings=settings)
     allow_test_identity(app)
@@ -150,7 +151,8 @@ async def test_count_failure_is_not_empty_catalog_or_committed_metadata_write(
     def unavailable(*args: object, **kwargs: object) -> None:
         raise RuntimeError("PRIVATE_STORAGE_DETAILS")
 
-    monkeypatch.setattr(root.vector_store._collection, "get", unavailable)
+    with root.database.connection() as connection:
+        connection.execute('ALTER TABLE vector_chunks RENAME COLUMN metadata TO damaged_metadata')
     try:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test",

@@ -3,6 +3,8 @@
 
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -25,6 +27,26 @@ class _Record(BaseModel):
     key: str
     status: str
     value: int
+
+
+def test_process_probe_keeps_live_process_running() -> None:
+    """检查 PID 不能向进程发送中断或终止信号。"""
+    from evaluation.checkpoints import _process_exists
+
+    options = (
+        {"creationflags": subprocess.DETACHED_PROCESS}
+        if sys.platform == "win32" else {}
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"], **options,
+    )
+    try:
+        assert _process_exists(process.pid) is True
+        assert process.poll() is None
+    finally:
+        process.terminate()
+        process.wait(timeout=10)
+    assert _process_exists(process.pid) is False
 
 
 def test_checkpoint_append_is_immediately_durable(tmp_path: Path) -> None:

@@ -119,7 +119,7 @@ class BM25Index:
         if not query_tokens:
             return []
         if self._chunk_loader is not None:
-            # Chroma 是跨 worker 的事实来源；当前语料较小，
+            # PostgreSQL 是跨 worker 的事实来源；当前语料较小，
             # 查询前刷新可避免其他 worker 长期使用旧索引。
             self.rebuild(self._chunk_loader())
         state = self._state

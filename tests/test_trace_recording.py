@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """真实SQLite追踪应保存每步、真实usage、失败状态和隐私边界。"""
 
@@ -7,7 +8,8 @@ from uuid import uuid4
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
-import sqlite3
+import psycopg
+from app.infrastructure.persistence.database import record_row, Record
 
 import pytest
 
@@ -18,7 +20,7 @@ from app.application.tracing import TraceService
 from app.application.tracing import provider_call
 from app.application.tracing import traced_step
 from app.domain.tracing import TokenUsage
-from app.infrastructure.persistence.traces import SQLiteTraceRepository
+from app.infrastructure.persistence.traces import PostgresTraceRepository
 
 
 def test_trace_roundtrip_records_steps_and_redacts_content_by_default(
@@ -29,8 +31,8 @@ def test_trace_roundtrip_records_steps_and_redacts_content_by_default(
     Args:
         tmp_path: 隔离数据库目录。
     """
-    path = tmp_path / "traces.sqlite3"
-    repository = SQLiteTraceRepository(path)
+    path = tmp_path / "traces.db"
+    repository = PostgresTraceRepository(pg_database(path))
     service = TraceService(repository)
     question = "私密的用户问题"
     with service.start(question, request_id=uuid4(), entry="query") as trace:
@@ -44,7 +46,7 @@ def test_trace_roundtrip_records_steps_and_redacts_content_by_default(
             })
         with provider_call("embedding", "https://model.example/v1?key=private", "embed") as call:
             call.usage = TokenUsage(input=12, output=0)
-    restored = SQLiteTraceRepository(path).get(trace.id)
+    restored = PostgresTraceRepository(pg_database(path)).get(trace.id)
     assert restored.status == "completed"
     assert restored.question is None
     assert restored.question_sha256 == hashlib.sha256(question.encode()).hexdigest()
@@ -67,7 +69,7 @@ def test_capture_queries_is_explicit_but_never_captures_credentials(
     Args:
         tmp_path: 隔离数据库目录。
     """
-    repository = SQLiteTraceRepository(tmp_path / "trace.sqlite3")
+    repository = PostgresTraceRepository(pg_database(tmp_path / "trace.db"))
     service = TraceService(repository, capture_queries=True)
     with service.start("原问题", request_id=uuid4(), entry="query") as trace:
         with traced_step("understanding", {
@@ -96,7 +98,7 @@ def test_failed_and_cancelled_steps_are_persisted_without_error_text(
         error: 执行中出现的异常或取消。
         status: 人工预期状态。
     """
-    repository = SQLiteTraceRepository(tmp_path / "trace.sqlite3")
+    repository = PostgresTraceRepository(pg_database(tmp_path / "trace.db"))
     service = TraceService(repository)
     with pytest.raises(type(error)):
         with service.start("原问题", request_id=uuid4(), entry="query") as trace:
@@ -114,7 +116,7 @@ def test_trace_context_is_reset_after_request(tmp_path: Path) -> None:
     Args:
         tmp_path: 隔离数据库目录。
     """
-    repository = SQLiteTraceRepository(tmp_path / "trace.sqlite3")
+    repository = PostgresTraceRepository(pg_database(tmp_path / "trace.db"))
     service = TraceService(repository)
     with service.start("原问题", request_id=uuid4(), entry="query") as trace:
         with traced_step("routing"):
@@ -141,7 +143,7 @@ def test_failed_execution_cannot_leave_commit_pending(
         error: 业务错误或协作取消。
         status: 正式轮次没有提交的原因。
     """
-    repository = SQLiteTraceRepository(tmp_path / "trace.sqlite3")
+    repository = PostgresTraceRepository(pg_database(tmp_path / "trace.db"))
     service = TraceService(repository)
     with pytest.raises(type(error)):
         with service.start("question", request_id=uuid4(), entry="conversation", conversation_id=uuid4()) as trace:
@@ -160,7 +162,7 @@ def test_failed_trace_write_does_not_replace_original_cancellation(
         tmp_path: 隔离数据库目录。
         monkeypatch: 在真实存储边界模拟一次写入故障。
     """
-    repository = SQLiteTraceRepository(tmp_path / "trace.sqlite3")
+    repository = PostgresTraceRepository(pg_database(tmp_path / "trace.db"))
     original_save = repository.save
 
     def save(snapshot) -> None:
@@ -186,8 +188,8 @@ def test_expired_trace_is_hidden_and_explicit_pruning_deletes_only_expired_rows(
         tmp_path: 隔离SQLite目录。
     """
     now = datetime(2026, 10, 23, tzinfo=UTC)
-    path = tmp_path / "trace.sqlite3"
-    repository = SQLiteTraceRepository(path, clock=lambda: now)
+    path = tmp_path / "trace.db"
+    repository = PostgresTraceRepository(pg_database(path), clock=lambda: now)
     service = TraceService(repository, retention_days=1, wall_clock=lambda: now)
     with service.start("第一条", request_id=uuid4(), entry="query") as old:
         pass
@@ -200,6 +202,6 @@ def test_expired_trace_is_hidden_and_explicit_pruning_deletes_only_expired_rows(
     assert repository.get(fresh.id).status == "completed"
     assert repository.prune_expired() == 1
     assert repository.prune_expired() == 0
-    with sqlite3.connect(path) as connection:
+    with pg_connect(path) as connection:
         rows = connection.execute("SELECT trace_id FROM traces").fetchall()
-    assert rows == [(str(fresh.id),)]
+    assert [row[0] for row in rows] == [str(fresh.id)]

@@ -37,8 +37,12 @@ class FileEvaluationReportReader:
         """
         try:
             # NONBLOCK避免FIFO挂起；NOFOLLOW拒绝链接，打开后再检查同一inode。
+            # Windows没有NOFOLLOW/NONBLOCK标志，其余校验保持一致。
             descriptor = os.open(
-                self._path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                self._path,
+                os.O_RDONLY
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_NONBLOCK", 0),
             )
         except FileNotFoundError as error:
             raise EvaluationReportNotFoundError("尚无已发布评估") from error

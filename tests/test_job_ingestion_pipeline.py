@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """真实解析、分块、SQLite进度和本地索引的任务流水线测试。"""
 
@@ -17,9 +18,9 @@ from app.domain.ingestion_jobs import IngestionProgress
 from app.infrastructure.chunking.recursive import RecursiveDocumentChunker
 from app.infrastructure.indexes.bm25 import BM25Index
 from app.infrastructure.parsing.factory import ParserFactory
-from app.infrastructure.persistence.ingestion_jobs import SQLiteIngestionJobRepository
-from app.infrastructure.persistence.knowledge_bases import SQLiteKnowledgeBaseRepository
-from app.infrastructure.vectorstores.chroma import ChromaVectorStore
+from app.infrastructure.persistence.ingestion_jobs import PostgresIngestionJobRepository
+from app.infrastructure.persistence.knowledge_bases import PostgresKnowledgeBaseRepository
+from app.infrastructure.vectorstores.postgres import PostgresVectorStore
 
 
 class BatchEmbedder:
@@ -64,9 +65,9 @@ class BatchEmbedder:
 
 
 def _setup(tmp_path: Path, embedder: BatchEmbedder):
-    catalog_path = tmp_path / "catalog.sqlite3"
-    SQLiteKnowledgeBaseRepository(catalog_path)
-    jobs = SQLiteIngestionJobRepository(catalog_path)
+    catalog_path = tmp_path / "catalog.db"
+    PostgresKnowledgeBaseRepository(pg_database(catalog_path))
+    jobs = PostgresIngestionJobRepository(pg_database(catalog_path))
     submission = IngestionJobSubmission(
         job_id=f"job_{uuid4().hex}", doc_id=uuid4(), kb_id="default",
         filename="original.txt", size_bytes=55, uploaded_by=uuid4(),
@@ -77,7 +78,7 @@ def _setup(tmp_path: Path, embedder: BatchEmbedder):
     assert claim is not None
     path = tmp_path / "saved.txt"
     path.write_text("abcdefghij\n" * 5, encoding="utf-8")
-    store = ChromaVectorStore(tmp_path / "chroma", "job_pipeline")
+    store = PostgresVectorStore(pg_database(tmp_path / "chroma"), "job_pipeline")
     index = BM25Index()
     lock = RLock()
     # 每行十字加分隔符，预留分隔符空间，避免触发字符级二次切分。

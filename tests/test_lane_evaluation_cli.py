@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """默认入口只计划13轮，dry-run不得构造模型、打开索引或创建运行目录。"""
 
@@ -18,8 +19,13 @@ from tests.test_fast_lane import _Provider
 from tests.test_scoped_agent import _Quality
 from tests.test_unified_query_api import _Model
 from tests.understanding import OfflineUnderstandingProvider
+from tests.corpus_state import CORPUS_MISSING_REASON
+from tests.corpus_state import evaluation_corpus_complete
 
 
+@pytest.mark.skipif(
+    not evaluation_corpus_complete(), reason=CORPUS_MISSING_REASON,
+)
 def test_dry_run_uses_env_settings_without_network_or_storage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -62,6 +68,9 @@ def test_dry_run_uses_env_settings_without_network_or_storage(
     assert not work.exists()
 
 
+@pytest.mark.skipif(
+    not evaluation_corpus_complete(), reason=CORPUS_MISSING_REASON,
+)
 def test_full_offline_entry_isolated_and_rescore_does_not_open_index(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -126,12 +135,12 @@ def test_full_offline_entry_isolated_and_rescore_does_not_open_index(
         evaluation_judge_api_key="judge",
         evaluation_judge_model="judge",
         evaluation_judge_base_url="https://judge.example/v1", reranker_base_url=None,
-        chroma_path=production / "chroma", docs_path=production / "docs",
-        knowledge_base_db_path=production / "catalog.sqlite3",
-        trace_db_path=production / "traces.sqlite3", auth_db_path=production / "auth.sqlite3",
-        conversation_db_path=production / "conversations.sqlite3",
-        agent_checkpoint_db_path=production / "checkpoints.sqlite3",
-        evaluation_chroma_path=tmp_path / "evaluation/chroma",
+        artifacts_path=production / "chroma", docs_path=production / "docs",
+
+
+
+
+        evaluation_artifacts_path=tmp_path / "evaluation/chroma",
     )
     work = tmp_path / "work"
     assert cli.main(["--work-root", str(work)], settings=settings) == 0
@@ -141,7 +150,7 @@ def test_full_offline_entry_isolated_and_rescore_does_not_open_index(
     assert report["generated_turns"] == report["scored_turns"] == 13
     assert report["status"] == "complete"
     assert not production.exists()
-    assert settings.evaluation_chroma_path.exists()
+    assert settings.evaluation_artifacts_path.exists()
 
     def forbidden(*args: object, **kwargs: object) -> None:
         raise AssertionError("评分或完全复用不能打开或重新向量化索引")

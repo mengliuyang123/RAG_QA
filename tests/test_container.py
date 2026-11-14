@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """共享应用容器的惰性装配、配置覆盖和生命周期测试。"""
 
@@ -29,7 +30,7 @@ from app.infrastructure.embeddings.openai_compatible import (
 )
 from app.infrastructure.indexes.bm25 import BM25Index
 from app.infrastructure.reranking.dashscope import RemoteReranker
-from app.infrastructure.vectorstores.chroma import ChromaVectorStore
+from app.infrastructure.vectorstores.postgres import PostgresVectorStore
 
 
 class _ClosableAdapter:
@@ -246,13 +247,13 @@ def _settings(tmp_path: Path) -> Settings:
         top_k=4,
         top_k_rerank=12,
         docs_path=tmp_path / "production-docs",
-        chroma_path=tmp_path / "production-chroma",
+        artifacts_path=tmp_path / "production-chroma",
         collection_name="production_collection",
         max_upload_size=4096,
-        conversation_db_path=tmp_path / "conversations.db",
-        knowledge_base_db_path=tmp_path / "catalog.sqlite3",
-        trace_db_path=tmp_path / "traces.sqlite3",
-        agent_checkpoint_db_path=tmp_path / "checkpoints.db",
+
+
+
+
         conversation_history_turns=6,
         agent_max_retrieval_calls=3,
         agent_temperature=0.0,
@@ -280,10 +281,10 @@ def test_conversation_service_is_lazy_shared_and_uses_existing_retrieval(
     assert isinstance(service, ConversationService)
     assert container.conversation_service is service
     assert recording.arguments["conversation_repository"] == {
-        "path": settings.conversation_db_path
+        "path": container.database
     }
     assert recording.arguments["conversation_checkpoint_store"] == {
-        "path": settings.agent_checkpoint_db_path
+        "path": container.database
     }
     assert service._agent is container.query_orchestrator
     assert "conversation_agent" not in recording.created
@@ -373,7 +374,7 @@ def test_runtime_options_override_only_requested_fields(
     recording = _RecordingFactories()
     metadata = {"fingerprint": "abc123", "schema_version": 2}
     options = RuntimeOptions(
-        chroma_path=tmp_path / "evaluation-chroma",
+        artifacts_path=tmp_path / "evaluation-chroma",
         collection_name="evaluation_collection",
         collection_metadata=metadata,
         rebuild_collection=True,
@@ -392,7 +393,7 @@ def test_runtime_options_override_only_requested_fields(
     container.baseline_query_service
 
     assert recording.arguments["vector_store"] == {
-        "path": tmp_path / "evaluation-chroma",
+        "path": container.database,
         "collection_name": "evaluation_collection",
         "collection_metadata": metadata,
         "rebuild_collection": True,
@@ -417,7 +418,7 @@ def test_runtime_options_override_only_requested_fields(
             / "document_deletions.jsonl"
         ),
     }
-    assert recording.arguments["repair_log"]["path"].is_relative_to(options.chroma_path)
+    assert recording.arguments["repair_log"]["path"].is_relative_to(options.artifacts_path)
     assert recording.arguments["reranker"] == {
         "base_url": settings.reranker_base_url,
         "api_key": settings.resolved_reranker_api_key,
@@ -431,7 +432,7 @@ def test_runtime_options_override_only_requested_fields(
         "temperature": 0.15,
         "reasoning_effort": settings.llm_reasoning_effort,
     }
-    assert settings.chroma_path == tmp_path / "production-chroma"
+    assert settings.artifacts_path == tmp_path / "production-chroma"
     assert settings.collection_name == "production_collection"
 
 
@@ -462,7 +463,7 @@ def test_runtime_options_are_frozen_and_fall_back_field_by_field(
     container.baseline_query_service
 
     assert recording.arguments["vector_store"] == {
-        "path": settings.chroma_path,
+        "path": container.database,
         "collection_name": "evaluation_collection",
         "collection_metadata": None,
         "rebuild_collection": False,
@@ -1352,7 +1353,7 @@ def test_default_factories_match_current_constructor_chain(
     )
     container = build_application_container(settings)
 
-    assert isinstance(container.vector_store, ChromaVectorStore)
+    assert isinstance(container.vector_store, PostgresVectorStore)
     assert isinstance(
         container.embedding_provider,
         OpenAICompatibleEmbeddingProvider,

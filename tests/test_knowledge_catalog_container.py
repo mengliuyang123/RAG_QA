@@ -1,3 +1,5 @@
+from app.bootstrap.container import _UNSET
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """组合根必须惰性装配目录，且评估不能读写生产的知识库元数据。"""
 
@@ -14,7 +16,7 @@ from app.domain.ingestion_jobs import IngestionJobSubmission
 
 def _settings(tmp_path: Path) -> Settings:
     return Settings(
-        _env_file=None, knowledge_base_db_path=tmp_path / "production.sqlite3",
+        _env_file=None,
         llm_api_key=None,
         embedding_api_key=None,
         openai_api_key=None,
@@ -31,11 +33,11 @@ def test_catalog_is_lazy_shared_without_models(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     container = build_application_container(settings)
     try:
-        assert not settings.knowledge_base_db_path.exists()
+        assert container._knowledge_base_repository_slot.value is _UNSET
         first = container.knowledge_base_repository
         assert first is container.knowledge_base_repository
         assert [item.id for item in first.list()] == ["default"]
-        assert settings.knowledge_base_db_path.exists()
+        assert container._knowledge_base_repository_slot.value is not _UNSET
     finally:
         container.close()
 
@@ -52,12 +54,12 @@ def test_runtime_catalog_isolates_production_and_each_collection(
     production = build_application_container(settings)
     first = build_application_container(
         settings, RuntimeOptions(
-            chroma_path=tmp_path / "eval", collection_name="first",
+            artifacts_path=tmp_path / "eval", collection_name="first",
         ),
     )
     second = build_application_container(
         settings, RuntimeOptions(
-            chroma_path=tmp_path / "eval", collection_name="second",
+            artifacts_path=tmp_path / "eval", collection_name="second",
         ),
     )
     try:
@@ -88,14 +90,14 @@ def test_runtime_can_explicitly_select_catalog_database(tmp_path: Path) -> None:
         tmp_path: 隔离目录。
     """
     settings = _settings(tmp_path)
-    selected = tmp_path / "selected.sqlite3"
+    selected = tmp_path / "selected.db"
     container = build_application_container(
-        settings, RuntimeOptions(knowledge_base_db_path=selected),
+        settings, RuntimeOptions(database_schema='isolated', ),
     )
     try:
         assert container.knowledge_base_repository.get("default").id == "default"
-        assert selected.exists()
-        assert not settings.knowledge_base_db_path.exists()
+        assert container.database.schema != settings.database_schema
+        assert container._knowledge_base_repository_slot.value is not _UNSET
     finally:
         container.close()
 
@@ -108,10 +110,10 @@ def test_runtime_suggestions_and_deletions_do_not_open_production_catalog(tmp_pa
     """
     settings = _settings(tmp_path)
     first = build_application_container(settings, RuntimeOptions(
-        chroma_path=tmp_path / "eval", collection_name="first",
+        artifacts_path=tmp_path / "eval", collection_name="first",
     ))
     second = build_application_container(settings, RuntimeOptions(
-        chroma_path=tmp_path / "eval", collection_name="second",
+        artifacts_path=tmp_path / "eval", collection_name="second",
     ))
     identifier = uuid4()
     try:
@@ -122,7 +124,7 @@ def test_runtime_suggestions_and_deletions_do_not_open_production_catalog(tmp_pa
         assert len(first.knowledge_read_registry.list_curated(None, 3)) == 1
         assert second.knowledge_read_registry.list_curated(None, 3) == ()
         assert second.knowledge_read_registry.was_deleted(identifier) is False
-        assert not settings.knowledge_base_db_path.exists()
+        assert first.database.schema != second.database.schema
     finally:
         first.close()
         second.close()
@@ -136,13 +138,13 @@ def test_runtime_ingestion_jobs_are_lazy_and_collection_isolated(tmp_path: Path)
     """
     settings = _settings(tmp_path)
     first = build_application_container(settings, RuntimeOptions(
-        chroma_path=tmp_path / "eval", collection_name="first",
+        artifacts_path=tmp_path / "eval", collection_name="first",
     ))
     second = build_application_container(settings, RuntimeOptions(
-        chroma_path=tmp_path / "eval", collection_name="second",
+        artifacts_path=tmp_path / "eval", collection_name="second",
     ))
     try:
-        assert not settings.knowledge_base_db_path.exists()
+        assert first.database.schema != second.database.schema
         submission = IngestionJobSubmission(
             job_id=f"job_{uuid4().hex}", doc_id=uuid4(), kb_id="default",
             filename="test.md", size_bytes=14, uploaded_by=uuid4(),
@@ -152,7 +154,7 @@ def test_runtime_ingestion_jobs_are_lazy_and_collection_isolated(tmp_path: Path)
         assert first.ingestion_job_repository is first.ingestion_job_repository
         assert first.ingestion_job_repository.unpublished_document_ids() == (submission.doc_id,)
         assert second.ingestion_job_repository.unpublished_document_ids() == ()
-        assert not settings.knowledge_base_db_path.exists()
+        assert first.database.schema != second.database.schema
     finally:
         first.close()
         second.close()

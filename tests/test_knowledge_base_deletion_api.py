@@ -1,8 +1,11 @@
+from app.bootstrap.container import _UNSET
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """知识库删除必须清真实索引与源，保留历史并可重试部分失败。"""
 
 import json
-import sqlite3
+import psycopg
+from app.infrastructure.persistence.database import record_row, Record
 from contextlib import AsyncExitStack
 from dataclasses import replace
 from pathlib import Path
@@ -24,14 +27,14 @@ from app.main import create_app
 from app.application.errors import TraceStorageError
 from app.application.errors import VectorStoreError
 from app.interfaces.http.auth import require_user
-from app.infrastructure.persistence.knowledge_deletion import SQLiteKnowledgeDeletionRepository
+from app.infrastructure.persistence.knowledge_deletion import PostgresKnowledgeDeletionRepository
 from tests.http_auth import allow_test_identity
 from tests.test_admin_chunk_diagnostics import _cite
 from tests.test_ingestion_job_container import _settings
 from tests.test_job_ingestion_pipeline import BatchEmbedder
 from tests.test_auth_service import PASSWORD
 from app.domain.knowledge_deletion import KnowledgeDeletionPlan
-from app.infrastructure.conversations.sqlite_repository import SQLiteConversationRepository
+from app.infrastructure.conversations.postgres_repository import PostgresConversationRepository
 
 
 @pytest.mark.anyio
@@ -55,7 +58,7 @@ async def test_force_delete_removes_only_its_documents_and_keeps_formal_history(
     root.vector_store.add_chunks([DocumentChunk(id=f"{other}:0", doc_id=str(other), filename="other.txt", text="别库正文", page=None, chunk_index=0)], [[1.0, 0.0]])
     chunks = root.vector_store.list_chunks()
     own_chunk = next(chunk for chunk in chunks if chunk.doc_id == str(job.doc_id))
-    repository = SQLiteConversationRepository(settings.conversation_db_path)
+    repository = PostgresConversationRepository(pg_database())
     turn = _cite(repository, job.doc_id, [own_chunk.id])
     source = settings.docs_path / f"{job.doc_id}_guide.txt"
     app = allow_test_identity(create_app(settings=settings, container_factory=lambda settings: root))
@@ -85,7 +88,7 @@ async def test_force_delete_removes_only_its_documents_and_keeps_formal_history(
             repeated = await client.delete(path, params={"force": True})
             assert repeated.status_code == 200
             assert repeated.json() == deleted.json()
-            with sqlite3.connect(settings.trace_db_path) as connection:
+            with pg_connect() as connection:
                 events = connection.execute("SELECT event_json FROM admin_access_audit").fetchall()
             attempts = []
             for row in events:
@@ -149,7 +152,7 @@ async def test_pending_job_blocks_force_delete_without_any_index(tmp_path: Path,
     job = root.ingestion_job_service.submit("ops", "guide.txt", b"source", uuid4())
     if running:
         assert root.ingestion_job_repository.claim_next(lease_seconds=60) is not None
-        with sqlite3.connect(settings.knowledge_base_db_path) as connection:
+        with pg_connect() as connection:
             connection.execute("UPDATE ingestion_jobs SET lease_expires_at='2000-01-01T00:00:00+00:00'")
     app = allow_test_identity(create_app(settings=settings, container_factory=lambda settings: root))
     try:
@@ -274,7 +277,7 @@ async def test_kb_delete_audit_failure_keeps_catalog_index_and_source(
             assert response.status_code == 503
             assert "内部路径" not in response.text
             assert root.knowledge_base_repository.get("empty").id == "empty"
-            with sqlite3.connect(settings.knowledge_base_db_path) as connection:
+            with pg_connect() as connection:
                 assert connection.execute("SELECT COUNT(*) FROM knowledge_deletion_plans").fetchone()[0] == 0
     finally:
         root.close()
@@ -324,7 +327,7 @@ async def test_runtime_delete_uses_its_own_catalog_sources_and_audit(tmp_path: P
     """
     settings = _settings(tmp_path)
     runtime = tmp_path / "runtime"
-    root = build_application_container(settings, RuntimeOptions(chroma_path=runtime, collection_name="delete-test"))
+    root = build_application_container(settings, RuntimeOptions(artifacts_path=runtime, collection_name="delete-test"))
     root.knowledge_base_repository.create(KnowledgeBase(id="ops", name="运维"))
     job = root.ingestion_job_service.submit("ops", "guide.txt", b"source", uuid4())
     claim = root.ingestion_job_repository.claim_next(lease_seconds=60)
@@ -343,9 +346,9 @@ async def test_runtime_delete_uses_its_own_catalog_sources_and_audit(tmp_path: P
             assert list(runtime.rglob(f"{job.doc_id}_guide.txt")) == []
             assert sentinel.read_bytes() == b"production sentinel"
             assert root.ingestion_job_service.get(job.job_id).status == "failed"
-            assert not settings.knowledge_base_db_path.exists()
-            assert not settings.trace_db_path.exists()
-            assert not settings.conversation_db_path.exists()
+            assert root.database.schema != settings.database_schema
+            assert root.database.schema != settings.database_schema
+            assert root.database.schema != settings.database_schema
     finally:
         root.close()
 
@@ -452,17 +455,17 @@ async def test_enqueue_between_prepare_and_freeze_blocks_delete(
     settings = _settings(tmp_path)
     root = build_application_container(settings)
     root.knowledge_base_repository.create(KnowledgeBase(id="ops", name="运维"))
-    begin = SQLiteKnowledgeDeletionRepository.begin
+    begin = PostgresKnowledgeDeletionRepository.begin
     admitted = []
 
     def _begin(
-        repository: SQLiteKnowledgeDeletionRepository,
+        repository: PostgresKnowledgeDeletionRepository,
         plan: KnowledgeDeletionPlan,
     ) -> KnowledgeDeletionPlan:
         admitted.append(root.ingestion_job_service.submit("ops", "guide.txt", b"concurrent source", uuid4()))
         return begin(repository, plan)
 
-    monkeypatch.setattr(SQLiteKnowledgeDeletionRepository, "begin", _begin)
+    monkeypatch.setattr(PostgresKnowledgeDeletionRepository, "begin", _begin)
     app = allow_test_identity(create_app(settings=settings, container_factory=lambda settings: root))
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
@@ -575,7 +578,7 @@ async def test_corrupt_job_is_not_treated_as_empty_kb(tmp_path: Path) -> None:
     root = build_application_container(settings)
     root.knowledge_base_repository.create(KnowledgeBase(id="ops", name="运维"))
     job = root.ingestion_job_service.submit("ops", "guide.txt", b"source", uuid4())
-    with sqlite3.connect(settings.knowledge_base_db_path) as connection:
+    with pg_connect() as connection:
         connection.execute("UPDATE ingestion_jobs SET status='succeeded'")
     app = allow_test_identity(create_app(settings=settings, container_factory=lambda settings: root))
     try:

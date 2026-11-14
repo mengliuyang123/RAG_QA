@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """隔离评估索引指纹与运行时工厂测试。"""
 
@@ -42,8 +43,9 @@ def _settings(tmp_path: Path, **overrides: object) -> Settings:
         "embedding_base_url": "https://embedding.example/v1/private",
         "reranker_base_url": "https://reranker.example/v1/private",
         "reranker_api_key": "reranker-secret",
-        "chroma_path": tmp_path / "production",
-        "evaluation_chroma_path": tmp_path / "evaluation",
+        "artifacts_path": tmp_path / "production",
+        "evaluation_artifacts_path": tmp_path / "evaluation",
+        "evaluation_database_schema": "eval_fixture",
         "_env_file": None,
     }
     values.update(overrides)
@@ -241,11 +243,12 @@ def test_runtime_rejects_production_path_before_component_construction(
 
     settings = _settings(
         tmp_path,
-        chroma_path=tmp_path / "same",
-        evaluation_chroma_path=tmp_path / "same" / ".",
+        artifacts_path=tmp_path / "same",
+        evaluation_artifacts_path=tmp_path / "same" / ".",
+        database_schema="same", evaluation_database_schema="same",
     )
 
-    with pytest.raises(ValueError, match="必须与生产路径隔离"):
+    with pytest.raises(ValueError, match="schema 必须与生产 schema 隔离"):
         runtime.build_evaluation_runtime(
             settings,
             _corpus(_entry("a.md", "a")),
@@ -309,7 +312,7 @@ def test_runtime_reuses_matching_non_empty_index(
     from app.bootstrap.container import ApplicationContainer
     from app.bootstrap.container import build_application_container
     from app.bootstrap.factories import AdapterFactories
-    from app.infrastructure.vectorstores.chroma import ChromaVectorStore
+    from app.infrastructure.vectorstores.postgres import PostgresVectorStore
     from evaluation import runtime
 
     settings = _settings(tmp_path)
@@ -324,12 +327,13 @@ def test_runtime_reuses_matching_non_empty_index(
         page=None,
         chunk_index=0,
     )
-    store = ChromaVectorStore(
-        settings.evaluation_chroma_path,
+    store = PostgresVectorStore(
+        __import__('app.infrastructure.persistence.database',fromlist=['Database']).Database(settings.database_url,settings.evaluation_database_schema),
         f"rag_eval_{fingerprint[:12]}",
         collection_metadata={
             "evaluation_fingerprint": fingerprint,
             "collection_schema_version": "1",
+            "embedding_identity": settings.embedding_model + "@https://embedding.example",
         },
     )
     store.add_chunks([stored_chunk], [[1.0, 0.0]])
@@ -402,7 +406,7 @@ def test_runtime_uses_shared_container_factory(tmp_path: Path) -> None:
         container_builder=build,
     )
 
-    assert calls[0].chroma_path == tmp_path / "evaluation"
+    assert calls[0].artifacts_path == tmp_path / "evaluation"
     assert calls[0].collection_name == result.collection_name
     assert calls[0].collection_metadata == {
         "evaluation_fingerprint": result.index_fingerprint,

@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
-"""以只读SQLite关联查询恢复真实提交事实，不做跨库假事务。"""
+"""以只读Postgres关联查询恢复真实提交事实，不做跨库假事务。"""
 
-import sqlite3
+import psycopg
+from app.infrastructure.persistence.database import Database, Record
 from collections.abc import Callable
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -26,33 +27,19 @@ def _utc_now() -> datetime:
 _SELECT = """
     SELECT tr.snapshot_json, t.id AS turn_id,
         t.conversation_id, c.owner_id, t.feedback_json,
-        (SELECT COUNT(*) FROM business.conversation_turns linked
+        (SELECT COUNT(*) FROM conversation_turns linked
          WHERE linked.trace_id = tr.trace_id) AS linked_count
     FROM traces tr
-    LEFT JOIN business.conversation_turns t ON t.trace_id = tr.trace_id
-    LEFT JOIN business.conversations c ON c.id = t.conversation_id
+    LEFT JOIN conversation_turns t ON t.trace_id = tr.trace_id
+    LEFT JOIN conversations c ON c.id = t.conversation_id
 """
 
 
-class SQLiteTraceReader:
+class PostgresTraceReader:
     """短连接读取双库，不复制问题、回答、引用正文或反馈备注。"""
 
-    def __init__(
-        self, trace_path: Path, conversation_path: Path,
-        clock: Callable[[], datetime] = _utc_now,
-    ) -> None:
-        """保存由组合根确定的同一运行隔离路径。
-
-        Args:
-            trace_path: 已初始化的追踪库。
-            conversation_path: 已初始化的业务库。
-            clock: UTC时间。
-
-        Returns:
-            None。
-        """
-        self._trace_path = trace_path
-        self._conversation_path = conversation_path
+    def __init__(self, database: Database, clock: Callable[[], datetime] = _utc_now) -> None:
+        self._database = database
         self._clock = clock
 
     def get(self, trace_id: UUID) -> TraceRecord:
@@ -67,17 +54,17 @@ class SQLiteTraceReader:
         try:
             with self._connect() as connection:
                 row = connection.execute(
-                    _SELECT + " WHERE tr.trace_id = ? AND tr.expires_at > ?",
+                    _SELECT + " WHERE tr.trace_id = %s AND tr.expires_at > %s",
                     (str(trace_id), self._clock().astimezone(UTC).isoformat()),
                 ).fetchone()
                 if row is None:
                     raise TraceNotFoundError("追踪不存在")
                 return self._record(row)
-        except (sqlite3.Error, OSError, ValueError) as exc:
+        except (psycopg.Error, OSError, ValueError) as exc:
             raise TraceStorageError("追踪关联查询失败") from exc
 
     @staticmethod
-    def _record(row: sqlite3.Row) -> TraceRecord:
+    def _record(row: Record) -> TraceRecord:
         if row["linked_count"] > 1:
             raise TraceStorageError("追踪关联不唯一")
         feedback = None
@@ -111,9 +98,9 @@ class SQLiteTraceReader:
         parameters.append(limit)
         try:
             with self._connect() as connection:
-                rows = connection.execute(query + " LIMIT ?", parameters).fetchall()
+                rows = connection.execute(query + " LIMIT %s", parameters).fetchall()
                 return tuple(self._record(row) for row in rows)
-        except (sqlite3.Error, OSError, ValueError) as exc:
+        except (psycopg.Error, OSError, ValueError) as exc:
             raise TraceStorageError("追踪列表查询失败") from exc
 
     def iter_records(self, filters: TraceFilters) -> Iterator[TraceRecord]:
@@ -135,37 +122,37 @@ class SQLiteTraceReader:
                         break
                     for row in rows:
                         yield self._record(row)
-        except (sqlite3.Error, OSError, ValueError) as exc:
+        except (psycopg.Error, OSError, ValueError) as exc:
             raise TraceStorageError("追踪统计读取失败") from exc
 
     def _selection(
         self, filters: TraceFilters, position: TracePosition | None,
     ) -> tuple[str, list[object]]:
-        conditions = ["tr.expires_at > ?"]
+        conditions = ["tr.expires_at > %s"]
         parameters: list[object] = [self._clock().astimezone(UTC).isoformat()]
         for field in ("lane", "outcome", "scope_expanded", "escalated", "user_id"):
             value = getattr(filters, field)
             if value is not None:
                 # 字段来自固定白名单；所有请求值均使用参数，不能插入SQL。
-                conditions.append(f"json_extract(tr.snapshot_json, '$.{field}') = ?")
-                parameters.append(str(value) if field == "user_id" else value)
+                conditions.append(f"(tr.snapshot_json::jsonb ->> '{field}') = %s")
+                parameters.append(str(value).lower() if isinstance(value, bool) else str(value))
         if filters.kb_id is not None:
             conditions.append("""EXISTS (
-                SELECT 1 FROM json_each(tr.snapshot_json, '$.steps') step,
-                    json_each(step.value, '$.input.kb_ids') kb
-                WHERE json_extract(step.value, '$.type') = 'retrieval'
-                    AND kb.value = ?
+                SELECT 1 FROM jsonb_array_elements(tr.snapshot_json::jsonb -> 'steps') step(value),
+                    jsonb_array_elements_text(step.value #> '{input,kb_ids}') kb(value)
+                WHERE (step.value::jsonb #>> '{type}') = 'retrieval'
+                    AND kb.value = %s
             )""")
             parameters.append(filters.kb_id)
         if filters.feedback is not None:
-            conditions.append("json_extract(t.feedback_json, '$.rating') = ?")
+            conditions.append("(t.feedback_json::jsonb #>> '{rating}') = %s")
             parameters.append(filters.feedback)
         for value, operator in ((filters.from_at, ">="), (filters.to_at, "<=")):
             if value is not None:
-                conditions.append(f"tr.created_at {operator} ?")
+                conditions.append(f"tr.created_at {operator} %s")
                 parameters.append(value.astimezone(UTC).isoformat())
         if position is not None:
-            conditions.append("(tr.created_at, tr.trace_id) < (?, ?)")
+            conditions.append("(tr.created_at, tr.trace_id) < (%s, %s)")
             parameters.extend((
                 position.created_at.astimezone(UTC).isoformat(),
                 str(position.trace_id),
@@ -175,16 +162,9 @@ class SQLiteTraceReader:
         return query, parameters
 
     @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(
-            self._trace_path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5,
-        )
-        connection.row_factory = sqlite3.Row
+    def _connect(self) -> Iterator[psycopg.Connection]:
         try:
-            connection.execute("ATTACH DATABASE ? AS business", (
-                self._conversation_path.resolve().as_uri() + "?mode=ro",
-            ))
-            connection.execute("BEGIN")
-            yield connection
-        finally:
-            connection.close()
+            with self._database.connection(read_only=True) as connection:
+                yield connection
+        except psycopg.Error as exc:
+            raise TraceStorageError("PostgreSQL 仓储操作失败") from exc

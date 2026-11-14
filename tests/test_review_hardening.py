@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """审查问题的并发、生产装配与数据边界回归测试。"""
 
@@ -119,16 +120,17 @@ def test_git_ignores_uploaded_and_conversation_data() -> None:
     """批量暂存不得意外加入上传正文和 SQLite/WAL 数据。"""
     root = Path(__file__).resolve().parents[1]
     paths = [
-        "data/docs/private.pdf", "data/conversations/history.sqlite3",
-        "data/conversations/history.sqlite3-wal",
-        "data/conversations/checkpoints.sqlite3-shm",
+        "data/docs/private.pdf", "data/conversations/history.db",
+        "data/conversations/history.db-wal",
+        "data/conversations/checkpoints.db-shm",
     ]
     result = subprocess.run(
         ["git", "check-ignore", "--no-index", "--stdin"],
-        cwd=root, input="\n".join(paths) + "\n", text=True,
+        cwd=root,
+        input=("\n".join(paths) + "\n").encode(),
         capture_output=True, check=False,
     )
-    assert result.stdout.splitlines() == paths
+    assert result.stdout.decode().splitlines() == paths
 
 
 @pytest.mark.anyio

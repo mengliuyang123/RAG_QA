@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 
 import pytest
+from tests.corpus_state import CORPUS_MISSING_REASON
+from tests.corpus_state import evaluation_corpus_complete
 
 
 def _sha256(content: bytes) -> str:
@@ -314,6 +316,9 @@ def test_rgb_manifest_rejects_changed_upstream_identity(
         load_rgb_manifest(path)
 
 
+@pytest.mark.skipif(
+    not evaluation_corpus_complete(), reason=CORPUS_MISSING_REASON,
+)
 def test_committed_evaluation_datasets_are_valid() -> None:
     """仓库交付的语料、QA 和 RGB 清单必须满足生产固定数量。"""
     from evaluation.datasets import (

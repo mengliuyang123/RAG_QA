@@ -1,8 +1,10 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """概览分母必须来自正式事实，不能把参与库误认为首次路由库。"""
 
 import json
-import sqlite3
+import psycopg
+from app.infrastructure.persistence.database import record_row, Record
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
@@ -22,7 +24,7 @@ from app.domain.conversations import ConversationTurn
 from app.domain.conversations import TurnCitation
 from app.domain.feedback import TurnFeedback
 from app.domain.knowledge_bases import KnowledgeBase
-from app.infrastructure.conversations.sqlite_repository import SQLiteConversationRepository
+from app.infrastructure.conversations.postgres_repository import PostgresConversationRepository
 from tests.test_auth_service import PASSWORD
 from tests.test_unified_query_api import _app
 
@@ -31,7 +33,7 @@ ENDPOINT = "/api/admin/insights/overview"
 
 
 def _turn(
-    repository: SQLiteConversationRepository, owner_id: UUID | None,
+    repository: PostgresConversationRepository, owner_id: UUID | None,
     scope: ScopeInfo, *, refused: bool = False, expanded: bool = False,
 ) -> ConversationTurn:
     metadata = AnswerMetadata(
@@ -68,7 +70,7 @@ async def test_overview_counts_formal_turns_and_exposes_unknown_denominators(tmp
     root = app.state.container
     root.knowledge_base_repository.create(KnowledgeBase(id="ops", name="运维"))
     root.knowledge_base_repository.create(KnowledgeBase(id="dev", name="研发"))
-    repository = SQLiteConversationRepository(root.settings.conversation_db_path)
+    repository = PostgresConversationRepository(pg_database(root.database))
     owner1 = uuid4()
     owner2 = uuid4()
     first = _turn(repository, owner1, ScopeInfo(searched=("ops",), initial=("ops",)))
@@ -86,8 +88,8 @@ async def test_overview_counts_formal_turns_and_exposes_unknown_denominators(tmp
     past = _turn(repository, uuid4(), ScopeInfo(searched=("ops",), initial=("ops",)))
     removed = _turn(repository, uuid4(), ScopeInfo(searched=("ops",), initial=("ops",)))
     repository.mark_deleting(removed.conversation_id)
-    with sqlite3.connect(root.settings.conversation_db_path) as connection:
-        connection.execute("UPDATE conversation_turns SET created_at=? WHERE id=?", (
+    with pg_connect(root.database) as connection:
+        connection.execute("UPDATE conversation_turns SET created_at=%s WHERE id=%s", (
             (datetime.now(UTC) - timedelta(days=8)).isoformat(), str(past.id),
         ))
     try:
@@ -167,7 +169,7 @@ async def test_overview_requires_admin_and_audit_even_for_empty_stats(
                 assert result.status_code == (200 if role == "admin" else 403)
             assert result.json()["totals"]["questions"] == 0
             assert result.json()["totals"]["active_users"] == 0
-            with sqlite3.connect(root.settings.trace_db_path) as connection:
+            with pg_connect(root.database) as connection:
                 rows = connection.execute("SELECT event_json FROM admin_access_audit").fetchall()
             assert len(rows) == 1
             event = json.loads(rows[0][0])
@@ -197,7 +199,7 @@ async def test_old_missing_scope_is_not_reported_as_no_retrieval(tmp_path: Path)
     """
     app, _, _ = _app(tmp_path)
     root = app.state.container
-    repository = SQLiteConversationRepository(root.settings.conversation_db_path)
+    repository = PostgresConversationRepository(pg_database(root.database))
     repository.save_turn(repository.create().id, "旧问题", AgentResult(
         answer="旧拒答", answer_mode="retrieval", retrieval_calls=1, citations=[],
         metadata=AnswerMetadata(
@@ -229,10 +231,10 @@ async def test_overview_storage_failure_is_safe_503(tmp_path: Path) -> None:
     """
     app, _, _ = _app(tmp_path)
     root = app.state.container
-    repository = SQLiteConversationRepository(root.settings.conversation_db_path)
+    repository = PostgresConversationRepository(pg_database(root.database))
     _turn(repository, uuid4(), ScopeInfo(searched=("default",), initial=("default",)))
     try:
-        with sqlite3.connect(root.settings.conversation_db_path) as connection:
+        with pg_connect(root.database) as connection:
             connection.execute("UPDATE conversation_turns SET metadata_json='{}'")
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test",

@@ -1,6 +1,6 @@
 # RAG_QA
 
-一个基于 FastAPI、LangGraph、Chroma 和 React 的检索增强生成（RAG）知识库问答系统。
+一个基于 FastAPI、LangGraph、PostgreSQL、pgvector 和 React 的检索增强生成（RAG）知识库问答系统。
 
 ## 功能
 
@@ -18,19 +18,21 @@
 - `tests/`：后端测试
 - `scripts/`：开发辅助脚本
 
-项目运行时产生的数据库、向量索引和日志会写入本地 `data/` 或 `evaluation/` 目录，不应提交到 Git。
+业务数据、向量、LangGraph 检查点和评估运行记录统一保存在 PostgreSQL。原始文档、修复日志与评估报告仍写入本地 `data/` 或 `evaluation/`，不应提交到 Git。
 
 ## 环境要求
 
 - Python 3.11+
 - Node.js 20+
 - npm
+- PostgreSQL（本机已验证 18.7）及已启用的 pgvector 扩展（已验证 0.8.7）
 - 推荐使用 uv 管理 Python 环境
 
 ## 后端安装与启动
 
 ```bash
 uv sync
+uv run python -m app.interfaces.cli.database
 uv run uvicorn main:app --reload --host 127.0.0.1 --port 8000
 ```
 
@@ -47,9 +49,12 @@ uvicorn main:app --reload --host 127.0.0.1 --port 8000
 
 应用从进程环境变量和项目根目录的本地 `.env` 文件读取配置。请在本地创建 `.env`，不要把它提交到 Git。
 
-最小配置示例：
+最小配置示例（`DATABASE_URL` 必须指向专用应用数据库，先由数据库管理员启用 `vector` 扩展）：
 
 ```dotenv
+DATABASE_URL=postgresql://rag_user:replace-with-password@127.0.0.1:5432/rag_qa
+DATABASE_SCHEMA=rag_qa
+EVALUATION_DATABASE_SCHEMA=rag_qa_evaluation
 OPENAI_API_KEY=replace-with-your-key
 LLM_MODEL=gpt-4o-mini
 EMBEDDING_MODEL=text-embedding-3-small
@@ -83,15 +88,32 @@ cd frontend
 VITE_API_MODE=live VITE_BACKEND_URL=http://127.0.0.1:8000 npm run dev -- --mode live
 ```
 
-前端默认地址为 `http://127.0.0.1:5173`。
+前端默认地址为 `http://127.0.0.1:5173`。Windows 保留端口导致 `EACCES` 时，可运行：
+
+```powershell
+npm.cmd run dev -- --mode live --host 127.0.0.1 --port 15173 --strictPort
+```
+
+然后访问 `http://127.0.0.1:15173`。
+
+全新数据库没有默认账号。在项目根目录的交互终端创建管理员：
+
+```bash
+uv run python -m app.interfaces.cli.users create --username mengl --name 管理员 --role admin
+```
+
+密码通过终端隐藏输入。旧 SQLite/Chroma 数据保留在原目录，不自动导入或回退使用。
 
 ## 测试
 
-后端：
+后端使用独立测试数据库，并在其中为每个测试建立随机 schema。请在 `.env` 设置指向另一数据库的 `TEST_DATABASE_URL`，预先启用 pgvector；禁止把它配置为应用数据库。
 
 ```bash
-uv run pytest
+uv sync --group eval
+uv run --group eval pytest
 ```
+
+`python -m app.interfaces.cli.database` 是显式、可重复执行的应用/评估 schema 迁移命令。运行进程不自动变更表结构。当前 2560 维向量使用完整精度的 cosine 精确检索；业务查询与评估在不同 schema 隔离。
 
 前端：
 

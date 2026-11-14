@@ -309,7 +309,8 @@ async def test_auth_storage_failure_is_503_not_anonymous_fallback(tmp_path: Path
     app, _, quality = _app(tmp_path, legacy_identity=False)
     try:
         # 在惰性认证初始化之前使数据库路径不可用，不替换认证或错误映射。
-        app.state.container.settings.auth_db_path.mkdir()
+        with app.state.container.database.connection() as connection:
+            connection.execute('DROP TABLE users CASCADE')
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="https://test",
         ) as client:

@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """同一编排器必须控制直答、澄清和真实Fast/Agent知识通道。"""
 
@@ -21,7 +22,7 @@ from app.domain.knowledge_bases import KnowledgeBase
 from app.domain.routing import QueryUnderstanding
 from app.domain.routing import KnowledgeScope
 from app.infrastructure.conversations.langgraph_agent import LangGraphConversationAgent
-from app.infrastructure.persistence.knowledge_bases import SQLiteKnowledgeBaseRepository
+from app.infrastructure.persistence.knowledge_bases import PostgresKnowledgeBaseRepository
 from tests.test_fast_lane import _Provider
 from tests.test_knowledge_runner import _RecordingRetriever
 from tests.test_retriever import FakeQueryEmbedder
@@ -56,7 +57,7 @@ class _Understanding:
 
 
 def _build(tmp_path: Path, understanding=None, agent_model=None):
-    catalog = SQLiteKnowledgeBaseRepository(tmp_path / "catalog.sqlite3")
+    catalog = PostgresKnowledgeBaseRepository(pg_database(tmp_path / "catalog.db"))
     catalog.create(KnowledgeBase(id="ops", name="运维"))
     catalog.create(KnowledgeBase(id="dev", name="研发"))
     store, index = _stores(tmp_path / "chroma")

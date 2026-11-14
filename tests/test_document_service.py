@@ -294,7 +294,12 @@ def test_list_documents_rejects_symlink_escape(tmp_path: Path) -> None:
     assert outside.read_text(encoding="utf-8") == "do not touch"
 
 
-@pytest.mark.parametrize("kind", ["symlink", "directory", "fifo"])
+@pytest.mark.parametrize("kind", [
+    "symlink", "directory",
+    pytest.param(
+        "fifo", marks=pytest.mark.skipif(os.name == "nt", reason="Windows 不支持 FIFO"),
+    ),
+])
 def test_nonregular_source_is_rejected_before_index_deletion(tmp_path: Path, kind: str) -> None:
     """源文件必须是本身份的普通文件，不能resolve后误删另一个文档。
 

@@ -30,3 +30,7 @@ data/repair/
 evaluation/cache/
 evaluation/work/
 evaluation/results/runs/
+
+# Local tool caches and personal notes
+.vite/
+.workbuddy/
