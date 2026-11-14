@@ -4,7 +4,7 @@
 
 ## 功能
 
-- 文档上传、解析、分块、向量检索和 BM25 关键词检索
+- 文档上传、解析、分块、向量检索和 PostgreSQL 中文全文检索（Jieba + GIN）
 - 多轮对话、流式回答、引用和证据展示
 - 知识库管理、用户认证、反馈与运行追踪
 - React + Vite 前端，支持演示数据和真实后端两种模式
@@ -55,7 +55,7 @@ uvicorn main:app --reload --host 127.0.0.1 --port 8000
 DATABASE_URL=postgresql://rag_user:replace-with-password@127.0.0.1:5432/rag_qa
 DATABASE_SCHEMA=rag_qa
 EVALUATION_DATABASE_SCHEMA=rag_qa_evaluation
-OPENAI_API_KEY=replace-with-your-key
+OPENAI_API_KEY=your-api-key
 LLM_MODEL=gpt-4o-mini
 EMBEDDING_MODEL=text-embedding-3-small
 ```
@@ -63,10 +63,10 @@ EMBEDDING_MODEL=text-embedding-3-small
 也可以使用兼容 OpenAI API 的服务：
 
 ```dotenv
-LLM_API_KEY=replace-with-your-key
+LLM_API_KEY=your-api-key
 LLM_BASE_URL=https://your-provider.example/v1
 LLM_MODEL=your-model
-EMBEDDING_API_KEY=replace-with-your-key
+EMBEDDING_API_KEY=your-api-key
 EMBEDDING_BASE_URL=https://your-provider.example/v1
 EMBEDDING_MODEL=your-embedding-model
 ```
