@@ -140,11 +140,17 @@ function ConversationList() {
   const { listError } = useRagThread();
   const [search, setSearch] = useState("");
   const query = search.trim().toLowerCase();
+  // 下标必须取自 assistant-ui 自己的 threadIds：会话列表刷新后，运行时的线程列表
+  // 会晚一次渲染才同步，直接按 conversations 的下标渲染 ItemByIndex 会越界崩溃。
+  const threadIds = useAuiState((state) => state.threads.threadIds);
+  const byId = new Map(conversations.map((conversation) => [conversation.id, conversation]));
 
   const groups = new Map<string, number[]>();
-  conversations.forEach((conversation, index) => {
-    if (query && !conversation.title.toLowerCase().includes(query)) return;
-    const label = groupLabel(conversation.updatedAt);
+  threadIds.forEach((id, index) => {
+    const conversation = byId.get(id);
+    const title = conversation?.title ?? "新对话";
+    if (query && !title.toLowerCase().includes(query)) return;
+    const label = conversation ? groupLabel(conversation.updatedAt) : "今天";
     groups.set(label, [...(groups.get(label) ?? []), index]);
   });
 
@@ -156,7 +162,7 @@ function ConversationList() {
           新对话
         </Button>
       </ThreadListPrimitive.New>
-      {conversations.length > 0 && (
+      {threadIds.length > 0 && (
         <div className="relative px-0.5 py-1">
           <SearchIcon className="pointer-events-none absolute start-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
@@ -170,10 +176,10 @@ function ConversationList() {
         </div>
       )}
       <div className="-mx-1 flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-1">
-        {conversations.length === 0 && (
+        {threadIds.length === 0 && (
           <div className="px-2.5 py-4 text-sm text-muted-foreground">还没有对话</div>
         )}
-        {conversations.length > 0 && query && groups.size === 0 && (
+        {threadIds.length > 0 && query && groups.size === 0 && (
           <div className="px-2.5 py-4 text-sm text-muted-foreground">没有找到对话</div>
         )}
         {[...groups.entries()].map(([label, indexes]) => (
@@ -181,7 +187,7 @@ function ConversationList() {
             <div className="px-2.5 pt-3 pb-1 text-xs font-medium text-muted-foreground">{label}</div>
             {indexes.map((index) => (
               <ThreadListPrimitive.ItemByIndex
-                key={conversations[index].id}
+                key={threadIds[index]}
                 index={index}
                 components={{ ThreadListItem: ConversationItem }}
               />
