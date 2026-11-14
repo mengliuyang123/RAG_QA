@@ -2,6 +2,7 @@ import { CheckCircle2Icon, ChevronDownIcon, FileTextIcon, SearchXIcon } from "lu
 import { useState, type ReactNode } from "react";
 import type { Citation, KbScope, Turn } from "../api/types";
 import { evidenceSummary } from "../lib/evidence";
+import { RETRIEVAL_TOOL, retrievalReasons } from "../lib/generative";
 import { useApp } from "../state/AppContext";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -15,8 +16,11 @@ interface TurnBodyProps {
   onCite(citation: Citation): void;
   onAsk(question: string): void;
   onRetryWithScope(scope: KbScope, question: string): void;
-  /** 渲染正文；默认使用 AnswerText，assistant-ui 中替换为 MessagePrimitive.Parts。 */
-  renderAnswer?: (activePosition: number | null) => ReactNode;
+  /**
+   * 渲染消息片段（工具卡片 → 正文 → 数据块）；assistant-ui 中传入 MessagePrimitive.Parts。
+   * 不传时只在已回答的轮次渲染 AnswerText（单测与旧用法）。
+   */
+  renderParts?: (activePosition: number | null) => ReactNode;
 }
 
 function formatSeconds(ms: number): string {
@@ -47,13 +51,16 @@ function ProcessSummary({ turn }: { turn: Turn }) {
       ? "已查找，但资料不足"
       : `参考了 ${sources} 份资料`;
 
+  // 有检索卡片时，范围、次数、扩大范围和深度检索已经在卡片标题里表达，这里不再重复。
+  const hasCards = turn.toolCalls.some((call) => call.name === RETRIEVAL_TOOL);
+  const reasons = retrievalReasons(turn.toolCalls);
   const details: string[] = [];
-  if (turn.searchedKbIds.length > 0) {
+  if (!hasCards && turn.searchedKbIds.length > 0) {
     details.push(`检索范围：${turn.searchedKbIds.map(kbName).join("、")}`);
   }
-  if (turn.scopeExpanded) details.push("所选范围内证据不足，已扩大到全部知识库");
-  if (turn.escalated) details.push("问题较复杂，已升级为深度检索");
-  if (turn.retrievalCalls > 0) details.push(`共检索 ${turn.retrievalCalls} 次`);
+  if (turn.scopeExpanded && !reasons.has("expand_scope")) details.push("所选范围内证据不足，已扩大到全部知识库");
+  if (turn.escalated && !reasons.has("escalate")) details.push("问题较复杂，已升级为深度检索");
+  if (!hasCards && turn.retrievalCalls > 0) details.push(`共检索 ${turn.retrievalCalls} 次`);
   const evidence = evidenceSummary(turn);
   if (evidence) details.push(evidence);
   if (user?.role === "admin") {
@@ -127,7 +134,7 @@ function RetryScopePicker({ turn, onRetry }: { turn: Turn; onRetry(scope: KbScop
   );
 }
 
-export function TurnBody({ turn, activeCitation, onCite, onAsk, onRetryWithScope, renderAnswer }: TurnBodyProps) {
+export function TurnBody({ turn, activeCitation, onCite, onAsk, onRetryWithScope, renderParts }: TurnBodyProps) {
   const { kbName } = useApp();
   // 引用对象在状态更新后会换新引用，按文档、分块和编号判断当前高亮。
   const activePosition = activeCitation && turn.citations.some(
@@ -140,6 +147,17 @@ export function TurnBody({ turn, activeCitation, onCite, onAsk, onRetryWithScope
   return (
     <>
       <ProcessSummary turn={turn} />
+
+      {renderParts
+        ? renderParts(activePosition)
+        : turn.outcome === "answered" && (
+          <AnswerText
+            answer={turn.answer}
+            citations={turn.citations}
+            activePosition={activePosition}
+            onCite={onCite}
+          />
+        )}
 
       {turn.outcome === "clarification" && turn.clarification && (
         <div className="rounded-xl border bg-card p-4">
@@ -183,14 +201,6 @@ export function TurnBody({ turn, activeCitation, onCite, onAsk, onRetryWithScope
 
       {turn.outcome === "answered" && (
         <>
-          {renderAnswer ? renderAnswer(activePosition) : (
-            <AnswerText
-              answer={turn.answer}
-              citations={turn.citations}
-              activePosition={activePosition}
-              onCite={onCite}
-            />
-          )}
           {turn.citations.length > 0 && (
             <div className="mt-3 flex flex-wrap gap-2" aria-label="引用来源">
               {[...turn.citations].sort((a, b) => a.position - b.position).map((citation) => {

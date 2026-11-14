@@ -18,12 +18,15 @@ import {
 } from "react";
 import { useMatch, useNavigate } from "react-router-dom";
 import { api, ApiError } from "../api";
+import { mergeDataBlock, mergeToolCall } from "../api/adapters";
 import type {
   Citation,
   Conversation,
+  DataBlock,
   FeedbackRating,
   KbScope,
   StatusUpdate,
+  ToolCall,
   Turn,
 } from "../api/types";
 import { useApp } from "../state/AppContext";
@@ -36,6 +39,9 @@ export interface PendingState {
   statuses: StatusUpdate[];
   answer: string;
   error: { code: string; message: string } | null;
+  /** 流式过程中按 tool_call_id 合并后的工具调用。 */
+  toolCalls: ToolCall[];
+  dataBlocks: DataBlock[];
 }
 
 // 线程里的消息由正式轮次和正在进行的一轮派生，assistant-ui 只负责渲染与交互。
@@ -48,6 +54,35 @@ export type RagMessage =
 export type AssistantCustom =
   | { kind: "answer"; turn: Turn }
   | { kind: "pending"; pending: PendingState };
+
+type ContentPart = Exclude<ThreadMessageLike["content"], string>[number];
+
+// 正在执行的调用不带 result：assistant-ui 让它继承消息状态（运行中显示转圈，被停止时为 incomplete）。
+// 完成或失败的调用带 result，失败额外标记 isError，渲染组件据此显示红色提示。
+function toolCallPart(call: ToolCall): ContentPart {
+  const base = {
+    type: "tool-call" as const,
+    toolCallId: call.id,
+    toolName: call.name,
+    args: call.args as Record<string, never>,
+  };
+  if (call.status === "complete") return { ...base, result: call.result ?? {} };
+  if (call.status === "error") return { ...base, result: { error: call.error }, isError: true };
+  return base;
+}
+
+function dataPart(block: DataBlock): ContentPart {
+  return { type: "data", id: block.id, name: block.type, data: block.data };
+}
+
+// 片段顺序固定为：工具调用 → 正文 → 数据块。没有工具调用和数据块的旧轮次只有正文，与之前一致。
+export function assistantContent(toolCalls: readonly ToolCall[], text: string, dataBlocks: readonly DataBlock[]): ContentPart[] {
+  return [
+    ...toolCalls.map(toolCallPart),
+    ...(text ? [{ type: "text" as const, text }] : []),
+    ...dataBlocks.map(dataPart),
+  ];
+}
 
 export function convertMessage(message: RagMessage): ThreadMessageLike {
   if (message.kind === "question") {
@@ -62,7 +97,7 @@ export function convertMessage(message: RagMessage): ThreadMessageLike {
     return {
       id: message.id,
       role: "assistant",
-      content: [{ type: "text", text: message.turn.answer }],
+      content: assistantContent(message.turn.toolCalls, message.turn.answer, message.turn.dataBlocks),
       createdAt: new Date(message.turn.createdAt),
       status: { type: "complete", reason: "stop" },
       metadata: { custom: { kind: "answer", turn: message.turn } },
@@ -72,7 +107,7 @@ export function convertMessage(message: RagMessage): ThreadMessageLike {
   return {
     id: message.id,
     role: "assistant",
-    content: pending.answer ? [{ type: "text", text: pending.answer }] : [],
+    content: assistantContent(pending.toolCalls, pending.answer, pending.dataBlocks),
     status: pending.error
       ? pending.error.code === "cancelled"
         ? { type: "incomplete", reason: "cancelled" }
@@ -165,7 +200,7 @@ export function RagRuntimeProvider({ children }: { children: ReactNode }) {
 
   const ask = useCallback(async (question: string, askScope: KbScope) => {
     lastAskRef.current = { question, scope: askScope };
-    setPending({ question, statuses: [], answer: "", error: null });
+    setPending({ question, statuses: [], answer: "", error: null, toolCalls: [], dataBlocks: [] });
 
     let id = currentIdRef.current;
     if (!id) {
@@ -199,6 +234,16 @@ export function RagRuntimeProvider({ children }: { children: ReactNode }) {
         onStatus: (update) => {
           if (stillCurrent()) {
             setPending((current) => current && { ...current, statuses: [...current.statuses, update] });
+          }
+        },
+        onTool: (call) => {
+          if (stillCurrent()) {
+            setPending((current) => current && { ...current, toolCalls: mergeToolCall(current.toolCalls, call) });
+          }
+        },
+        onData: (block) => {
+          if (stillCurrent()) {
+            setPending((current) => current && { ...current, dataBlocks: mergeDataBlock(current.dataBlocks, block) });
           }
         },
         onToken: (token) => {

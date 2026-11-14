@@ -48,6 +48,8 @@ export function SourcePanel({ citation, onClose }: SourcePanelProps) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  // position 为 0 表示来自检索卡片、未被正式引用的片段。
+  const heading = citation.position > 0 ? `来源 [${citation.position}]` : "检索片段";
   const updated = context?.docUpdatedAt ? new Date(context.docUpdatedAt).toLocaleDateString("zh-CN") : null;
   const meta = [
     citation.kbId ? kbName(citation.kbId) : null,
@@ -57,11 +59,11 @@ export function SourcePanel({ citation, onClose }: SourcePanelProps) {
 
   return (
     <aside
-      aria-label={`来源 ${citation.position}`}
+      aria-label={heading}
       className="fixed inset-0 z-30 flex min-h-0 flex-col bg-background duration-200 animate-in fade-in slide-in-from-right-4 lg:static lg:z-auto lg:border-l"
     >
       <div className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
-        <span className="text-sm font-medium">来源 [{citation.position}]</span>
+        <span className="text-sm font-medium">{heading}</span>
         <TooltipIconButton tooltip="关闭" aria-label="关闭来源面板" className="ms-auto size-7" onClick={onClose}>
           <XIcon />
         </TooltipIconButton>

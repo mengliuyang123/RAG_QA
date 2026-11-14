@@ -33,6 +33,8 @@ describe("createMockApi streamQuery", () => {
     await api.streamQuery(conversation.id, "你好", { mode: "auto", kbIds: [] }, {
       onStatus: (update) => statuses.push(update),
       onToken: (token) => { text += token; },
+      onTool: () => undefined,
+      onData: () => undefined,
       onComplete: (turn) => { completed = turn; },
       onError: () => { throw new Error("unexpected error event"); },
     }, new AbortController().signal);
@@ -48,7 +50,7 @@ describe("createMockApi streamQuery", () => {
   it("rejects a second concurrent question on the same conversation", async () => {
     const api = createMockApi();
     const conversation = await api.createConversation({ mode: "auto", kbIds: [] });
-    const noop = { onStatus() {}, onToken() {}, onComplete() {}, onError() {} };
+    const noop = { onStatus() {}, onToken() {}, onTool() {}, onData() {}, onComplete() {}, onError() {} };
     const controller = new AbortController();
     const first = api.streamQuery(conversation.id, "checkpoint", { mode: "auto", kbIds: [] }, noop, controller.signal);
     await expect(

@@ -108,6 +108,30 @@ export interface Turn {
   traceId: string | null;
   feedback: FeedbackRating | null;
   createdAt: string;
+  /** 本轮每次工具调用的最终状态；旧记录或后端未提供时为空数组。 */
+  toolCalls: ToolCall[];
+  /** 本轮附带的结构化数据块（如表格）；缺失时为空数组。 */
+  dataBlocks: DataBlock[];
+}
+
+// 接口约定 v1：SSE `event: tool` 与轮次字段 `tool_calls`。args / result 保留原始 JSON，
+// 由各工具的渲染组件自行解析，未知工具不会因为字段不同而报错。
+export type ToolCallStatus = "running" | "complete" | "error";
+
+export interface ToolCall {
+  id: string;
+  name: string;
+  status: ToolCallStatus;
+  args: Record<string, unknown>;
+  result: Record<string, unknown> | null;
+  error: { code: string; message: string } | null;
+}
+
+// 接口约定 v1：SSE `event: data` 与轮次字段 `data_blocks`。type 未知时前端忽略。
+export interface DataBlock {
+  id: string;
+  type: string;
+  data: unknown;
 }
 
 export interface ConversationSummary {
@@ -133,6 +157,10 @@ export interface StatusUpdate {
 export interface StreamHandlers {
   onStatus(update: StatusUpdate): void;
   onToken(token: string): void;
+  /** 工具调用的状态变化；同一 id 先 running，再推唯一终态。 */
+  onTool(call: ToolCall): void;
+  /** 结构化数据块（二期，后端可能晚到）。 */
+  onData(block: DataBlock): void;
   onComplete(turn: Turn): void;
   onError(code: string, message: string): void;
 }

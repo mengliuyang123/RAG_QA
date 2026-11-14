@@ -1,4 +1,4 @@
-import { normalizeDocument, normalizeTurn } from "./adapters";
+import { normalizeDocument, normalizeToolCall, normalizeTurn } from "./adapters";
 import {
   MOCK_DOCUMENTS,
   MOCK_INSIGHTS,
@@ -56,6 +56,58 @@ type RawTurn = Record<string, unknown>;
 interface Scenario {
   statuses: Record<string, unknown>[];
   turn: RawTurn;
+  /** 接口约定 v1 的 data_blocks（二期）。 */
+  dataBlocks?: Record<string, unknown>[];
+  /** 演示检索失败：第几次检索返回 error 终态（从 1 开始）。 */
+  failAttempt?: number;
+}
+
+const RETRIEVAL_PHASES = new Set(["retrieving", "expanding"]);
+
+// 按接口约定 v1 把场景里的检索阶段转成 retrieve_knowledge 调用：
+// 首次为 initial，expanding 为 expand_scope，escalating 之后的检索为 escalate。
+// 命中片段取自对应知识库的演示文档，被正式引用的分块标记 used。
+export function mockToolCalls(question: string, scenario: Scenario): Record<string, unknown>[] {
+  const citations = (scenario.turn.citations as { doc_id: string; chunk_id: string }[] | undefined) ?? [];
+  const used = new Set(citations.map((item) => item.chunk_id));
+  const calls: Record<string, unknown>[] = [];
+  let escalated = false;
+  let attempt = 0;
+  for (const status of scenario.statuses) {
+    if (status.phase === "escalating") escalated = true;
+    if (!RETRIEVAL_PHASES.has(String(status.phase))) continue;
+    attempt += 1;
+    const kbIds = Array.isArray(status.kb_ids) ? (status.kb_ids as string[]) : [];
+    const label = typeof status.label === "string" ? status.label.replace(/^正在补充查找[:：]s*/, "") : null;
+    const reason = status.phase === "expanding" ? "expand_scope" : escalated && attempt > 1 ? "escalate" : "initial";
+    const args = { query: label ?? question, kb_ids: kbIds, attempt, reason };
+    const id = `tc_${String(attempt).padStart(2, "0")}`;
+    if (scenario.failAttempt === attempt) {
+      calls.push({ tool_call_id: id, tool_name: "retrieve_knowledge", status: "error", args,
+        error: { code: "retrieval_failed", message: "检索服务暂时不可用" } });
+      continue;
+    }
+    const hits = MOCK_DOCUMENTS
+      .filter((doc) => kbIds.length === 0 || kbIds.includes(doc.kbId))
+      .flatMap((doc) => doc.chunks.map((chunk, index) => ({ doc, chunk, index })))
+      // 被引用的分块排在前面，模拟真实检索里高分片段被采用。
+      .sort((x, y) => Number(used.has(`${y.doc.docId}:${y.index}`)) - Number(used.has(`${x.doc.docId}:${x.index}`)))
+      .slice(0, 4)
+      .map(({ doc, chunk, index }, order) => {
+        const chunkId = `${doc.docId}:${index}`;
+        return {
+          doc_id: doc.docId, chunk_id: chunkId, kb_id: doc.kbId, filename: doc.filename,
+          page: chunk.page, score: Number((0.86 - order * 0.07).toFixed(2)),
+          snippet: chunk.text.slice(0, 200), used: used.has(chunkId),
+        };
+      });
+    const relevant = hits.filter((hit) => hit.used).length || Math.min(1, hits.length);
+    calls.push({
+      tool_call_id: id, tool_name: "retrieve_knowledge", status: "complete", args,
+      result: { retrieved: hits.length * 2, relevant, hits },
+    });
+  }
+  return calls;
 }
 
 function cite(doc: MockDocument, chunkIndex: number, position: number) {
@@ -114,6 +166,25 @@ export function pickScenario(question: string, scope: KbScope): Scenario {
           options: ["checkpoint 存储配置", "检索策略配置", "部署环境配置"],
         },
         kb_scope: { mode: scope.mode, requested: scope.kbIds, searched: [] },
+      },
+    };
+  }
+
+  if (/检索失败|故障演练/.test(question)) {
+    return {
+      statuses: [{ phase: "understanding" }, { phase: "retrieving", attempt: 1, kb_ids: searched(["dev"]) }, { phase: "verifying" }],
+      failAttempt: 1,
+      turn: {
+        ...base,
+        answer: "根据现有知识库，我无法可靠回答这个问题",
+        outcome: "refused",
+        grounding: "ungrounded",
+        lane: "fast",
+        retrieval_calls: 1,
+        citations: [],
+        evidence_stats: { used: 0, excluded: 0, retrieved: 0, relevant: 0 },
+        refusal: { reason: "no_evidence", found_summary: null, missing: [], suggested_kb_id: null },
+        kb_scope: { mode: scope.mode, requested: scope.kbIds, searched: searched(["dev"]) },
       },
     };
   }
@@ -229,6 +300,16 @@ export function pickScenario(question: string, scope: KbScope): Scenario {
         evidence_stats: { used: 2, excluded: 3, retrieved: 5, relevant: 2 },
         kb_scope: { mode: scope.mode, requested: scope.kbIds, searched: searched(["product"]) },
       },
+      dataBlocks: [{
+        data_id: "d_01",
+        type: "table",
+        data: {
+          caption: "0.2 版本更新一览",
+          columns: ["版本", "更新内容", "涉及页面"],
+          rows: [["0.2", "多轮会话与可点击的引用来源", "对话页"], ["0.2", "文档管理：查看入库状态、删除文档", "知识库管理"]],
+          source_positions: [1, 2],
+        },
+      }],
     };
   }
 
@@ -388,6 +469,8 @@ export function createMockApi(): Api {
       const started = performance.now();
       try {
         const scenario = pickScenario(question, scope);
+        const toolCalls = mockToolCalls(question, scenario);
+        let attempt = 0;
         for (const status of scenario.statuses) {
           handlers.onStatus({
             phase: String(status.phase),
@@ -396,11 +479,24 @@ export function createMockApi(): Api {
             label: typeof status.label === "string" ? status.label : null,
             queuePosition: null,
           });
-          await sleep(550, signal);
+          // 检索阶段同时按约定推送 tool 事件：先 running，再唯一终态，全部在第一个 token 之前。
+          const call = RETRIEVAL_PHASES.has(String(status.phase)) ? toolCalls[attempt++] : undefined;
+          if (call) {
+            const running = normalizeToolCall({ ...call, status: "running", result: undefined, error: undefined });
+            if (running) handlers.onTool(running);
+            await sleep(900, signal);
+            const final = normalizeToolCall(call);
+            if (final) handlers.onTool(final);
+            await sleep(250, signal);
+          } else {
+            await sleep(550, signal);
+          }
         }
         const turn = normalizeTurn(
           {
             ...scenario.turn,
+            tool_calls: toolCalls,
+            data_blocks: scenario.dataBlocks ?? [],
             turn_id: uuid(),
             conversation_id: conversationId,
             latency_ms: Math.round(performance.now() - started),
@@ -413,6 +509,7 @@ export function createMockApi(): Api {
           handlers.onToken(turn.answer.slice(offset, offset + 6));
           await sleep(25, signal);
         }
+        for (const block of turn.dataBlocks) handlers.onData(block);
         conversation.turns.push(turn);
         conversation.updatedAt = turn.createdAt;
         if (conversation.turns.length === 1) conversation.title = question.slice(0, 50);

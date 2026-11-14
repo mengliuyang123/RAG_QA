@@ -1,6 +1,8 @@
 import {
   errorMessage,
+  normalizeDataBlock,
   normalizeDocument,
+  normalizeToolCall,
   normalizeStatus,
   normalizeTurn,
 } from "./adapters";
@@ -258,6 +260,13 @@ export function createLiveApi(): Api {
         }
         if (event === "status") handlers.onStatus(normalizeStatus(payload));
         else if (event === "token" && typeof payload.token === "string") handlers.onToken(payload.token);
+        else if (event === "tool") {
+          const call = normalizeToolCall(payload);
+          if (call) handlers.onTool(call);
+        } else if (event === "data") {
+          const block = normalizeDataBlock(payload);
+          if (block) handlers.onData(block);
+        }
         else if (event === "complete") {
           finished = true;
           handlers.onComplete(normalizeTurn(payload, { conversationId, question }));

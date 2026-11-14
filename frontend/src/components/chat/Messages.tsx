@@ -18,11 +18,13 @@ import {
 } from "lucide-react";
 import { createContext, useContext } from "react";
 import type { Citation, FeedbackRating, Turn } from "../../api/types";
+import { visibleStatuses } from "../../lib/generative";
 import { phaseLabel } from "../../lib/phases";
 import { useRagThread, type AssistantCustom, type PendingState } from "../../runtime/RagRuntime";
 import { useApp } from "../../state/AppContext";
 import { AnswerText, PendingAnswer } from "../AnswerText";
 import { GROUNDING, TurnBody } from "../TurnView";
+import { DATA_UIS, TOOL_UIS } from "./GenerativeParts";
 import { Button } from "@/components/ui/button";
 import { TooltipIconButton } from "@/components/ui/tooltip-icon-button";
 import { cn } from "@/lib/utils";
@@ -47,11 +49,14 @@ const AnswerContext = createContext<{
   citations: Citation[];
   activePosition: number | null;
   onCite(citation: Citation): void;
+  /** 拒答和澄清轮次的正文由卡片表达，片段里的文本不再渲染。 */
+  showText: boolean;
 } | null>(null);
 
 function CitedText({ text }: TextMessagePartProps) {
   const context = useContext(AnswerContext);
   if (!context) return <div className="answer"><PendingAnswer text={text} /></div>;
+  if (!context.showText) return null;
   return (
     <AnswerText
       answer={text}
@@ -109,9 +114,16 @@ function AnswerMessage({ turn }: { turn: Turn }) {
           onCite={setActiveCitation}
           onAsk={(question) => send(question)}
           onRetryWithScope={(scope, question) => send(question, scope)}
-          renderAnswer={(activePosition) => (
-            <AnswerContext.Provider value={{ citations: turn.citations, activePosition, onCite: setActiveCitation }}>
-              <MessagePrimitive.Parts components={{ Text: CitedText }} />
+          renderParts={(activePosition) => (
+            <AnswerContext.Provider
+              value={{
+                citations: turn.citations,
+                activePosition,
+                onCite: setActiveCitation,
+                showText: turn.outcome === "answered",
+              }}
+            >
+              <MessagePrimitive.Parts components={{ Text: CitedText, tools: TOOL_UIS, data: DATA_UIS }} />
             </AnswerContext.Provider>
           )}
         />
@@ -154,7 +166,8 @@ function PendingMessage({ pending }: { pending: PendingState }) {
   const aui = useAui();
   // 连续相同的文案只显示一次，未知阶段直接忽略。
   const steps: string[] = [];
-  for (const status of pending.statuses) {
+  // 本轮有检索卡片时，检索类阶段由卡片表达，这里只保留排队、理解、核对、整理回答等阶段。
+  for (const status of visibleStatuses(pending.statuses, pending.toolCalls)) {
     const label = phaseLabel(status, kbName);
     if (label && steps.at(-1) !== label) steps.push(label);
   }
@@ -163,7 +176,7 @@ function PendingMessage({ pending }: { pending: PendingState }) {
   return (
     <div className="px-2 leading-relaxed break-words text-foreground">
       <div className="mb-2 flex flex-col gap-1 text-sm text-muted-foreground" aria-live="polite" aria-busy={running}>
-        {steps.length === 0 && running && (
+        {steps.length === 0 && running && pending.toolCalls.length === 0 && (
           <div className="flex items-center gap-2">
             <Loader2Icon className="size-4 animate-spin" />
             <span className="animate-pulse">正在连接</span>
@@ -193,7 +206,7 @@ function PendingMessage({ pending }: { pending: PendingState }) {
           </Button>
         )}
       </div>
-      <MessagePrimitive.Parts components={{ Text: StreamingText }} />
+      <MessagePrimitive.Parts components={{ Text: StreamingText, tools: TOOL_UIS, data: DATA_UIS }} />
       {running && pending.answer === "" && steps.length > 0 && (
         <span className="animate-pulse font-sans" aria-hidden>●</span>
       )}
