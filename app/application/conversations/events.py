@@ -8,6 +8,19 @@ from pydantic import ConfigDict
 from pydantic import Field
 
 from app.domain.conversations import ConversationQueryResult
+from app.domain.generative_ui import ToolCall, DataBlock
+
+
+class ToolConversationEvent(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    event: Literal['tool'] = 'tool'
+    data: ToolCall
+
+
+class DataConversationEvent(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    event: Literal['data'] = 'data'
+    data: DataBlock
 
 
 class StatusConversationData(BaseModel):
@@ -87,4 +100,6 @@ ConversationStreamEvent = (
     | TokenConversationEvent
     | CompleteConversationEvent
     | ErrorConversationEvent
+    | ToolConversationEvent
+    | DataConversationEvent
 )

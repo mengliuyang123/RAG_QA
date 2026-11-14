@@ -7,6 +7,7 @@ from typing import runtime_checkable
 
 from app.application.conversations.events import StatusConversationData
 from app.application.conversations.ports import StatusCallback
+from app.application.conversations.generative_ui import observe_status
 
 
 _LABELS = {
@@ -84,6 +85,7 @@ def notify_status(
     Returns:
         None。
     """
+    observe_status(phase)
     if isinstance(callback, _ScopedCallback):
         callback.report(phase, attempt, kb_ids)
     elif callback is not None:
@@ -131,6 +133,7 @@ class ProgressReporter:
         Returns:
             None。
         """
+        observe_status(phase)
         self._publish(StatusConversationData(
             phase=phase, attempt=attempt,
             kb_ids=kb_ids, label=_LABELS.get(phase),

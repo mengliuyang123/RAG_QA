@@ -224,3 +224,62 @@ assistant-ui 支持 `AttachmentAdapter`（在输入框里拖入文件或图片�
 | `frontend/src/components/Layout.tsx` | 侧栏改用 ThreadListPrimitive；布局层挂载运行时 |
 | `frontend/src/pages/ChatPage.tsx` | 首页和会话页合并 |
 | 删除 `pages/HomePage.tsx`、`components/Composer.tsx`、`components/PendingTurn.tsx` | 功能已迁移到上面的新组件 |
+
+## 6. Generative UI 事件（已实现）
+
+2026-11-15，一期后端实现。仅扩展 `POST /api/conversations/{id}/query/stream`，原有 `status` / `token` / `complete` / `error` 事件继续保留；管理员 `/api/query/stream` 不增加这些事件。
+
+### 工具事件
+
+新增 `event: tool`。`tool_name` 固定为 `retrieve_knowledge`；一轮内 ID 按实际调用顺序为 `tc_01`、`tc_02`……。字段与约定 v1 一致：
+
+```json
+{"tool_call_id":"tc_01","tool_name":"retrieve_knowledge","status":"running","args":{"query":"多 worker 用什么存储","kb_ids":["ops"],"attempt":1,"reason":"initial"}}
+```
+
+```json
+{"tool_call_id":"tc_01","tool_name":"retrieve_knowledge","status":"complete","args":{"query":"多 worker 用什么存储","kb_ids":["ops"],"attempt":1,"reason":"initial"},"result":{"retrieved":8,"relevant":3,"hits":[{"doc_id":"<uuid>","chunk_id":"<str>","kb_id":"ops","filename":"deploy.md","page":3,"snippet":"本次实际检索返回的可公开资料……","used":true}]}}
+```
+
+失败终态：
+
+```json
+{"tool_call_id":"tc_01","tool_name":"retrieve_knowledge","status":"error","args":{"query":"多 worker 用什么存储","kb_ids":["ops"],"attempt":1,"reason":"initial"},"error":{"code":"retrieval_failed","message":"检索失败"}}
+```
+
+- 每次实际检索开始即发 `running`；同一个 ID 随后只有一个终态。无检索的直接回答不发 tool 事件。
+- `reason` 对应 `initial` / `expand_scope` / `escalate`，实际查询和范围由执行层提供。
+- 为确保 `used` 反映最终引用，终态在答案校验完成后统一按调用顺序发布，全部早于首个 token。因此可能出现 running(1)、running(2)、complete(1)、complete(2)，请按 ID 更新工具片段。
+- `retrieved` 是该次可公开范围内返回的块数；`relevant` 是其中最终通过证据校验的块数。`hits` 最多 10 条，按相关性排序；`used` 严格匹配最终引用的知识库、文档和块 ID。
+- 本期省略可选的 `score`：混合召回/RRF 和重排原始分数尺度不同，不伪造 0–1 分数。
+- `snippet` 只来自实际检索结果中符合该次知识库范围的文档块；未知范围不公开正文。去除控制字符，对检测到的内部路径从起点隐藏到行尾（包括含空格/引号的路径），然后截断到 200 个字符。`filename` 只保留文件名，不公开目录。不会发送模型消息、提示词、scratchpad、原始异常或推理过程。
+- 用户取消/断连后停止所有后续事件，也不保存未完成轮次。断连时已经出现的 running 不再补发终态，前端按取消态结束当前运行。
+
+### 持久化与历史回放
+
+`complete` 的 payload 以及 `GET /api/conversations/{id}` 每轮均增加：
+
+- `tool_calls`：按实际调用顺序保存的终态数组，每项与 SSE 终态字段完全一致，不保存 running。
+- `data_blocks`：本期固定为 `[]`。
+
+两个数组与正式轮次在同一 PostgreSQL 事务提交。完整历史、分页历史及非流式会话响应均返回它们。旧轮次无需重新执行模型或检索，迁移后返回 `tool_calls: []`、`data_blocks: []`。
+
+### 结构化数据块（二期）
+
+本期已定义类型化 `event: data` 与 table 数据模型，字段仍为 `data_id`、`type: "table"`、`data: {caption, columns, rows, source_positions}`；最多 50 行、10 列，单元格限定字符串或有限数字。**本期不生成或发送 data 事件**，不开放未经引用验证的表格输出；表格生成与引用溯源校验留待二期。
+
+### 与任务提示的差异
+
+1. 使用 **`schema_v5.sql`**，而不是提示中的 v4：v4 已发布用于 PostgreSQL 全文索引，不能覆盖；v1–v4 均未为本任务改写。升级命令仍为 `uv run python -m app.interfaces.cli.database`，可重复执行。
+2. 表格事件按约定允许延后二期，本期只提供类型与空数组回放。
+3. 可选的 score 本期不返回。其他接口字段名、枚举及现有事件均保持约定。
+
+### 前后端联调确认（2026-11-15）
+
+1. **完成与回放**：`complete` 必定携带 `tool_calls` 和 `data_blocks`，即使为空也返回 `[]`。前端可直接用 complete 替换流式状态；历史接口返回同一份已持久化终态。本期不发 data，`data_blocks=[]`。
+2. **引用 ID**：`hits.doc_id`、`hits.chunk_id` 直接沿用检索块的原始业务 ID，与本轮 `citations` 同源，不添加或删除前缀，不截取 ID。前端用 `(doc_id, chunk_id)` 对应后取 citation.position 显示 `[n]`；没有对应引用时不强行分配编号。旧引用的 `chunk_id` 可能为 null，此时无法可靠匹配到块，不应猜测。`used` 则由后端按 `(kb_id, doc_id, chunk_id)` 精确判断。
+3. **空范围不代表全部库**：工具参数 `args.kb_ids=[]` 表示空范围或未明确可公开范围，绝不能据此展示“全部知识库”或扩大来源查询。正常线上会话先由 ScopeResolver 解析，再传递实际 ID 列表；自动选择或确实搜索全部可用库，也会枚举实际 ID。兼容旧内部入口出现未知范围时，后端不公开命中片段。通用 `status.kb_ids=[]` 还可能表示该阶段尚未确定范围或不适用，同样不表示全库。前端空数组文案建议用“范围未明确”，自动选库由 `kb_scope.mode` 区分。
+4. **数量与列表**：`retrieved` 为该次可公开范围内返回的块总数，`relevant` 为其中最终通过证据校验的块数；`hits` 仅展示按相关性降序的前 10 条，最多 10 条。因此标题数字可大于列表长度，不能以 `hits.length` 覆盖这两个统计。
+5. **表格时机**：二期启用后，data 事件必须早于 complete，且每个数据块必须同时出现在 complete.data_blocks 及历史中；与 token 的相对时序不作承诺。前端统一把表格放正文之后符合约定。本期尚不发送 data。
+6. **阶段事件**：后端继续发送 retrieving / expanding / escalating 等现有 status；前端有工具卡片时隐藏重复阶段提示即可，无需后端停推。
+7. **单元格类型**：协议仅允许字符串或有限数字；布尔值、对象、数组、null、NaN/Infinity 均不属于支持类型。后端 table 模型已作类型及行列约束（最多 50 行、10 列）。前端的对象/布尔值字符串化只能作为防御处理，不应依赖它作为正式协议。

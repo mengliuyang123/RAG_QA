@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """基于 LangGraph 的受控多轮 Agentic RAG 实现。"""
 
+from app.application.conversations.generative_ui import track_retrieval
 import json
 from collections.abc import Callable
 from threading import RLock
@@ -626,10 +627,12 @@ class LangGraphConversationAgent:
                         "top_k": state["top_k"],
                     }) as step,
                 ):
-                    results = self._retrieval_service.retrieve(
-                        query, strategy=RetrievalStrategy(state["retrieval_strategy"]),
-                        top_k=state["top_k"], **retrieval_options,
-                    )
+                    with track_retrieval(query, retrieval_options.get("kb_ids")) as ui_rows:
+                        results = self._retrieval_service.retrieve(
+                            query, strategy=RetrievalStrategy(state["retrieval_strategy"]),
+                            top_k=state["top_k"], **retrieval_options,
+                        )
+                        ui_rows.extend(results)
                     step.set_output({"results": [
                         {"chunk_id": item.chunk_id, "kb_id": item.kb_id,
                          "score": item.score, "rank": rank}

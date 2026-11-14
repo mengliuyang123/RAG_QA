@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """HTTP API 使用的请求与响应模型。"""
 
+from app.domain.generative_ui import ToolCall, DataBlock
 from datetime import datetime
 from uuid import UUID
 from typing import Literal
@@ -372,6 +373,8 @@ class ConversationTurnResponse(RoutedResponseFields):
     citations: list[ConversationCitationResponse]
     latency_ms: float = Field(ge=0)
     created_at: datetime
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+    data_blocks: list[DataBlock] = Field(default_factory=list)
 
 
 class ConversationDetailResponse(ConversationSummaryResponse):
@@ -391,6 +394,8 @@ class ConversationQueryResponse(RoutedResponseFields):
     retrieval_calls: int = Field(ge=0, le=3)
     citations: list[ConversationCitationResponse]
     latency_ms: float = Field(ge=0)
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+    data_blocks: list[DataBlock] = Field(default_factory=list)
 
 
 class ConversationDeleteResponse(BaseModel):

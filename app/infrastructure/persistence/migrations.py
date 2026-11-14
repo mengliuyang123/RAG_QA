@@ -38,6 +38,9 @@ def migrate_database(dsn: str, schema: str = 'rag_qa') -> None:
             connection.execute('ALTER TABLE vector_chunks ALTER COLUMN search_text SET NOT NULL')
             connection.execute('CREATE INDEX vector_chunks_search ON vector_chunks USING GIN(search_vector)')
             connection.execute('INSERT INTO schema_migrations VALUES (4)')
+        if connection.execute('SELECT 1 FROM schema_migrations WHERE version=5').fetchone() is None:
+            connection.execute(Path(__file__).with_name('schema_v5.sql').read_text(encoding='utf-8'))
+            connection.execute('INSERT INTO schema_migrations VALUES (5)')
     # 官方 checkpoint 迁移包含并发索引，要求 autocommit。
     from langgraph.checkpoint.postgres import PostgresSaver
     from psycopg.rows import dict_row

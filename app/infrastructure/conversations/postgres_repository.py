@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """使用独立 Postgres 数据库持久化正式多轮会话历史。"""
 
+import json
 import psycopg
 from app.infrastructure.persistence.database import Database, Record
 from collections.abc import Iterator, Sequence
@@ -249,7 +250,7 @@ class PostgresConversationRepository:
                     SELECT sequence_id AS turn_rowid, id, conversation_id,
                            user_message, assistant_message, answer_mode,
                            retrieval_calls, latency_ms, created_at, metadata_json,
-                           feedback_json
+                           feedback_json, tool_calls, data_blocks
                     FROM conversation_turns
                     WHERE conversation_id = %s
                     ORDER BY created_at ASC, turn_rowid ASC
@@ -429,7 +430,7 @@ class PostgresConversationRepository:
                         SELECT sequence_id AS turn_rowid, id, conversation_id,
                                user_message, assistant_message, answer_mode,
                                retrieval_calls, latency_ms, created_at, metadata_json,
-                               feedback_json
+                               feedback_json, tool_calls, data_blocks
                         FROM conversation_turns
                         WHERE conversation_id = %s
                         ORDER BY created_at DESC, turn_rowid DESC
@@ -524,8 +525,8 @@ class PostgresConversationRepository:
                 INSERT INTO conversation_turns(
                     id, conversation_id, user_message, assistant_message,
                     answer_mode, retrieval_calls, latency_ms, created_at,
-                    metadata_json, trace_id
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    metadata_json, trace_id, tool_calls, data_blocks
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)
                 """,
                 (
                     str(turn_id),
@@ -538,6 +539,8 @@ class PostgresConversationRepository:
                     created_at.isoformat(),
                     result.metadata.model_dump_json() if result.metadata else None,
                     result.metadata.trace_id if result.metadata else None,
+                    json.dumps([c.model_dump(mode="json") for c in result.tool_calls], ensure_ascii=False),
+                    json.dumps([d.model_dump(mode="json") for d in result.data_blocks], ensure_ascii=False),
                 ),
             )
             self._insert_citations(connection, turn_id, result.citations)
@@ -578,6 +581,7 @@ class PostgresConversationRepository:
             answer_mode=result.answer_mode,
             retrieval_calls=result.retrieval_calls,
             citations=result.citations,
+            tool_calls=result.tool_calls, data_blocks=result.data_blocks,
             latency_ms=latency_ms,
             created_at=created_at,
             metadata=result.metadata or self._legacy_metadata(
@@ -714,6 +718,7 @@ class PostgresConversationRepository:
             latency_ms=row["latency_ms"],
             created_at=datetime.fromisoformat(row["created_at"]),
             metadata=metadata,
+            tool_calls=row["tool_calls"] or [], data_blocks=row["data_blocks"] or [],
         )
 
     @staticmethod
