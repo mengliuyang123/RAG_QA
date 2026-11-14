@@ -1,12 +1,16 @@
 /// <reference types="vitest/config" />
+import { fileURLToPath, URL } from "node:url";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
+  resolve: {
+    alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
+  },
   server: {
-    // 5173 落在 Windows 常见的保留端口段（5078–5177）内，会报 EACCES。
-    port: 15173,
+    port: 5173,
     proxy: {
       "/api": {
         target: process.env.VITE_BACKEND_URL ?? "http://127.0.0.1:8000",

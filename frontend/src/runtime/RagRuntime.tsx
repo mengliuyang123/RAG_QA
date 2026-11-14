@@ -264,8 +264,9 @@ export function RagRuntimeProvider({ children }: { children: ReactNode }) {
   const threadList = useMemo<ExternalStoreThreadListAdapter>(() => {
     const threads = conversations.map((item) => ({ status: "regular" as const, id: item.id, title: item.title }));
     // 首问刚创建的会话在列表刷新前就成为当前线程；assistant-ui 要求当前线程必须在列表里。
+    // 追加在末尾：侧栏按下标（与 conversations 一致）渲染条目。
     if (routeId && !threads.some((item) => item.id === routeId)) {
-      threads.unshift({ status: "regular", id: routeId, title: conversation?.title ?? "新对话" });
+      threads.push({ status: "regular", id: routeId, title: conversation?.title ?? "新对话" });
     }
     return {
       threadId: routeId ?? undefined,
