@@ -112,8 +112,9 @@ class JobIngestionPipeline:
                 on_progress(IngestionProgress(stage="indexing"))
                 with self._mutation_lock:
                     check()
-                    chunks = self._vector_store.list_chunks()
-                    self._keyword_index.rebuild(chunks)
+                    if not getattr(self._keyword_index, 'maintained_with_chunks', False):
+                        chunks = self._vector_store.list_chunks()
+                        self._keyword_index.rebuild(chunks)
                 return count
         except Exception:
             try:

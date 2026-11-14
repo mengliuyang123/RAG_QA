@@ -65,7 +65,7 @@ from app.infrastructure.generation.token_counting import (
     Utf8TokenUpperBoundCounter,
 )
 from app.infrastructure.conversations.quality import ModelQualityEvaluator
-from app.infrastructure.indexes.bm25 import BM25Index
+from app.infrastructure.indexes.postgres import PostgresKeywordIndex
 from app.infrastructure.parsing.factory import ParserFactory
 from app.infrastructure.persistence.repair_log import RepairLog
 from app.infrastructure.persistence.traces import PostgresTraceRepository
@@ -110,6 +110,14 @@ class VectorStoreAdapter(
     Protocol,
 ):
     """聚合组合根所需的向量存储读、写和管理能力。"""
+
+    @property
+    def database(self) -> Database:
+        """供默认 PostgreSQL 全文适配器复用的容器连接池。"""
+
+    @property
+    def collection_name(self) -> str:
+        """当前文本块集合身份。"""
 
 
 class ConversationCheckpointAdapter(
@@ -243,9 +251,7 @@ def _create_parser_resolver() -> ParserResolver:
 def _create_keyword_index(
     vector_store: VectorStoreAdapter,
 ) -> KeywordIndex:
-    keyword_index = BM25Index()
-    keyword_index.rebuild(vector_store.list_chunks())
-    return keyword_index
+    return PostgresKeywordIndex(vector_store.database, vector_store.collection_name)
 
 
 def _create_repair_log(path: Path) -> RepairLogWriter:

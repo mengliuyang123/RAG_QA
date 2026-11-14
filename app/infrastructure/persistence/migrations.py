@@ -24,6 +24,20 @@ def migrate_database(dsn: str, schema: str = 'rag_qa') -> None:
         if connection.execute('SELECT 1 FROM schema_migrations WHERE version=3').fetchone() is None:
             connection.execute(Path(__file__).with_name('schema_v3.sql').read_text(encoding='utf-8'))
             connection.execute('INSERT INTO schema_migrations VALUES (3)')
+        if connection.execute('SELECT 1 FROM schema_migrations WHERE version=4').fetchone() is None:
+            from app.infrastructure.indexes.tokenization import search_text
+            connection.execute(Path(__file__).with_name('schema_v4.sql').read_text(encoding='utf-8'))
+            # ALTER TABLE 的锁持续到提交，回填与旧写入不能交错；流式读取限制内存。
+            with connection.cursor(name='fulltext_backfill') as reader:
+                reader.execute('SELECT collection,id,text FROM vector_chunks')
+                while rows := reader.fetchmany(500):
+                    with connection.cursor() as writer:
+                        writer.executemany('UPDATE vector_chunks SET search_text=%s WHERE collection=%s AND id=%s',
+                                           [(search_text(text), collection, identity)
+                                            for collection, identity, text in rows])
+            connection.execute('ALTER TABLE vector_chunks ALTER COLUMN search_text SET NOT NULL')
+            connection.execute('CREATE INDEX vector_chunks_search ON vector_chunks USING GIN(search_vector)')
+            connection.execute('INSERT INTO schema_migrations VALUES (4)')
     # 官方 checkpoint 迁移包含并发索引，要求 autocommit。
     from langgraph.checkpoint.postgres import PostgresSaver
     from psycopg.rows import dict_row

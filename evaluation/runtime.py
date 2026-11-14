@@ -139,7 +139,7 @@ class EvaluationRuntime:
         expected_chunk_count: 固定语料按当前配置产生的块数。
         container: 生产与评估共享的应用组合根。
         vector_store: 隔离评估 PostgreSQL 存储。
-        keyword_index: 与 PostgreSQL 内容一致的 BM25 索引。
+        keyword_index: 与文本块同事务维护的 PostgreSQL 全文索引。
         query_service: 支持三种检索策略的评估查询服务。
     """
 

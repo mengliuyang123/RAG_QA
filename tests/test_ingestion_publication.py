@@ -17,7 +17,7 @@ from app.domain.ingestion_jobs import IngestionJobSubmission
 from app.domain.ingestion_jobs import IngestionJob
 from app.domain.knowledge_bases import KnowledgeBase
 from app.domain.retrieval import RetrievalResult
-from app.infrastructure.indexes.bm25 import BM25Index
+from app.infrastructure.indexes.postgres import PostgresKeywordIndex
 from app.infrastructure.persistence.ingestion_jobs import PostgresIngestionJobRepository
 from app.infrastructure.persistence.knowledge_bases import PostgresKnowledgeBaseRepository
 from app.infrastructure.vectorstores.postgres import PostgresVectorStore
@@ -32,7 +32,7 @@ FILLER = UUID("33333333-3333-4333-8333-333333333333")
 def _setup(
     tmp_path: Path,
 ) -> tuple[
-    PostgresVectorStore, BM25Index, PostgresIngestionJobRepository, IngestionJob,
+    PostgresVectorStore, PostgresKeywordIndex, PostgresIngestionJobRepository, IngestionJob,
 ]:
     path = tmp_path / "catalog.db"
     catalog = PostgresKnowledgeBaseRepository(pg_database(path))
@@ -70,7 +70,7 @@ def _setup(
     vectors.append([1.0, 0.0])
     store = PostgresVectorStore(pg_database(tmp_path / "chroma"), "publication_test")
     store.add_chunks(chunks, vectors)
-    index = BM25Index()
+    index = PostgresKeywordIndex(store.database, store.collection_name)
     index.rebuild(chunks)
     return store, index, jobs, queued
 

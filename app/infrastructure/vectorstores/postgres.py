@@ -14,10 +14,19 @@ from app.domain.knowledge_bases import validate_kb_ids
 from app.domain.knowledge_views import IndexedChunkHeader, IndexedDocumentHeader
 from app.domain.retrieval import VectorSearchResult
 from app.infrastructure.persistence.database import Database
+from app.infrastructure.indexes.tokenization import search_text
 from app.infrastructure.vectorstores.knowledge_reader import _decode_header, _validate_group
 
 
 class PostgresVectorStore:
+    @property
+    def database(self) -> Database:
+        return self._database
+
+    @property
+    def collection_name(self) -> str:
+        return self._collection_name
+
     def __init__(self, database: Database, collection_name: str,
                  collection_metadata: Mapping[str, str | int] | None = None) -> None:
         self._database = database
@@ -82,7 +91,7 @@ class PostgresVectorStore:
             metadata = chunk.model_dump(mode='json', exclude={'id', 'text'})
             metadata['page'] = chunk.page or 0
             values.append((self._collection_name, chunk.id, chunk.doc_id, chunk.kb_id,
-                           Jsonb(metadata), chunk.text, self._vector(vector)))
+                           Jsonb(metadata), chunk.text, self._vector(vector), search_text(chunk.text)))
         with self._connection() as connection:
             row = connection.execute('SELECT dimensions FROM vector_collections WHERE name=%s FOR UPDATE',
                                      (self._collection_name,)).fetchone()
@@ -90,8 +99,8 @@ class PostgresVectorStore:
                 raise VectorStoreError('向量集合维度不匹配')
             connection.execute('UPDATE vector_collections SET dimensions=%s WHERE name=%s',
                                (dimensions, self._collection_name))
-            connection.cursor().executemany('INSERT INTO vector_chunks(collection,id,doc_id,kb_id,metadata,text,embedding) '
-                                           'VALUES (%s,%s,%s,%s,%s,%s,%s::vector)', values)
+            connection.cursor().executemany('INSERT INTO vector_chunks(collection,id,doc_id,kb_id,metadata,text,embedding,search_text) '
+                                           'VALUES (%s,%s,%s,%s,%s,%s,%s::vector,%s)', values)
 
     @staticmethod
     def _chunk(row) -> DocumentChunk:

@@ -59,6 +59,8 @@ idna==3.18
     #   requests
 iniconfig==2.3.0
     # via pytest
+jieba==0.42.1
+    # via rag-qa-s
 jiter==0.14.0
     # via openai
 jsonpatch==1.33

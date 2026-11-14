@@ -33,7 +33,7 @@ pip install -r requirements.txt
 DATABASE_URL=postgresql://rag_user:replace-with-password@127.0.0.1:5432/rag_qa
 DATABASE_SCHEMA=rag_qa
 EVALUATION_DATABASE_SCHEMA=rag_qa_evaluation
-OPENAI_API_KEY=replace-with-your-key
+OPENAI_API_KEY=your-api-key
 LLM_MODEL=gpt-4o-mini
 EMBEDDING_MODEL=text-embedding-3-small
 ```
@@ -49,6 +49,10 @@ uv run python -m app.interfaces.cli.database
 ```
 
 命令初始化应用和评估 schema，并运行官方 LangGraph PostgreSQL 检查点迁移。重复执行不会清空数据。
+
+全文检索迁移 v4 会使用固定版本 Jieba 0.42.1 分批回填已有文本块的分词字段，不重新生成向量；回填、生成列和 GIN 索引在一个事务中完成，失败全部回滚。升级时暂停写入，并在迁移成功后重启所有后端/入库 worker，确保新写入使用同一分词规则。迁移期间会锁住文本块表，大语料请预留维护时间。
+
+分词后的 `search_text` 与文本块一起写入；`search_vector` 是 PostgreSQL 生成列，GIN 索引随提交和删除自动维护，查询无需重建进程内索引。直接 SQL 导入或修改正文时，必须同时用后端的 `search_text(text)` 更新分词字段。修改 Jieba 词典或算法后，应通过新迁移重新回填所有记录，避免新旧切词混用。
 
 
 ```bash

@@ -138,7 +138,7 @@ class IngestionPipeline:
             self._delete_document_unlocked(doc_id)
 
     def _delete_document_unlocked(self, doc_id: str) -> None:
-        if self._keyword_index is None:
+        if self._keyword_index is None or getattr(self._keyword_index, 'maintained_with_chunks', False):
             self._vector_store.delete_document(doc_id)
             return
 
@@ -157,7 +157,7 @@ class IngestionPipeline:
             raise
 
     def _rebuild_keyword_index(self) -> None:
-        if self._keyword_index is not None:
+        if self._keyword_index is not None and not getattr(self._keyword_index, 'maintained_with_chunks', False):
             self._keyword_index.rebuild(self._vector_store.list_chunks())
 
     @staticmethod

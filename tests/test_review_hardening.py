@@ -89,31 +89,20 @@ async def test_health_remains_responsive_during_upload() -> None:
         app.state.container.close()
 
 
-def test_production_bm25_queries_do_not_reload_chroma() -> None:
-    """生产 factory 的查询必须复用预建索引而非加载整个向量库。"""
-    class Store:
-        """禁止查询期间重复加载语料的存储。"""
-
-        calls = 0
-
-        def list_chunks(self) -> list[DocumentChunk]:
-            """只允许初始化时读取一次。
-
-            Returns:
-                有完整来源信息的语料快照。
-            """
-            self.calls += 1
-            if self.calls > 1:
-                raise AssertionError("查询不应重新扫描 Chroma")
-            return [DocumentChunk(
-                id="doc:0", doc_id="doc", text="SQLite storage",
-                filename="a.md", page=None, chunk_index=0,
-            )]
-
-    store = Store()
+def test_production_keyword_queries_do_not_load_full_corpus(tmp_path, monkeypatch) -> None:
+    """默认全文适配器直接查询数据库，初始化与查询都不载入全库。"""
+    from app.infrastructure.vectorstores.postgres import PostgresVectorStore
+    store = PostgresVectorStore(pg_database(tmp_path), 'fulltext')
+    store.add_chunks([DocumentChunk(
+        id='doc:0', doc_id='doc', text='PostgreSQL storage',
+        filename='a.md', page=None, chunk_index=0,
+    )], [[1., 0.]])
+    def forbidden():
+        raise AssertionError('关键词检索不应加载全量语料')
+    monkeypatch.setattr(store, 'list_chunks', forbidden)
     index = AdapterFactories().keyword_index(store)
-    assert index.search("SQLite", 1)[0].chunk_id == "doc:0"
-    assert index.search("storage", 1)[0].chunk_id == "doc:0"
+    assert index.search('PostgreSQL', 1)[0].chunk_id == 'doc:0'
+    assert index.search('storage', 1)[0].chunk_id == 'doc:0'
 
 
 def test_git_ignores_uploaded_and_conversation_data() -> None:

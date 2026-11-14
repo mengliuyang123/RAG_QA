@@ -28,7 +28,7 @@ from app.infrastructure.chunking.recursive import RecursiveDocumentChunker
 from app.infrastructure.embeddings.openai_compatible import (
     OpenAICompatibleEmbeddingProvider,
 )
-from app.infrastructure.indexes.bm25 import BM25Index
+from app.infrastructure.indexes.postgres import PostgresKeywordIndex
 from app.infrastructure.reranking.dashscope import RemoteReranker
 from app.infrastructure.vectorstores.postgres import PostgresVectorStore
 
@@ -1359,7 +1359,7 @@ def test_default_factories_match_current_constructor_chain(
         OpenAICompatibleEmbeddingProvider,
     )
     assert isinstance(container.chunker, RecursiveDocumentChunker)
-    assert isinstance(container.keyword_index, BM25Index)
+    assert isinstance(container.keyword_index, PostgresKeywordIndex)
     assert isinstance(container.ingestion_pipeline, IngestionPipeline)
     assert isinstance(container.upload_service, UploadService)
     assert isinstance(container.document_service, DocumentService)
