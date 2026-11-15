@@ -1,0 +1,81 @@
+# 启动: docker compose up -d --build
+# .env 中需要设置:
+#   POSTGRES_PASSWORD  数据库密码（必填）
+#   PUBLIC_HOST        浏览器访问用的公网 IP 或域名，本机试跑可不填（默认 localhost）
+#   AUTH_SECURE_COOKIE 纯 HTTP 访问公网 IP 时必须设为 false，否则浏览器不保存登录 Cookie
+# 其余应用配置（模型、API Key 等）也从 .env 读取。
+
+# 固定项目名，镜像名始终是 rag_qa-app / rag_qa-web，与代码所在目录名无关
+name: rag_qa
+
+services:
+  db:
+    image: pgvector/pgvector:pg18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: rag_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}
+      POSTGRES_DB: rag_qa
+    volumes:
+      # PostgreSQL 18 镜像的数据目录在 /var/lib/postgresql/18/docker，挂载其父目录
+      - pg_data:/var/lib/postgresql
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      # 只监听本机，映射到 5433 避免与宿主机已有 PostgreSQL 冲突
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag_user -d rag_qa"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # 一次性迁移：应用进程按设计不自动改表结构，每次 up 时先显式执行（可重复执行）
+  migrate:
+    image: rag_qa-app
+    build:
+      context: .
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+    env_file: .env
+    environment: &app_env
+      # 覆盖 .env 里指向 127.0.0.1 的地址，改为连接 compose 内的 db 服务
+      DATABASE_URL: postgresql://rag_user:${POSTGRES_PASSWORD}@db:5432/rag_qa
+      TEST_DATABASE_URL: postgresql://rag_user:${POSTGRES_PASSWORD}@db:5432/rag_qa_postgres_test
+      # 浏览器经 nginx 访问时 Host 是公网地址；127.0.0.1 留给容器健康检查
+      HTTP_ALLOWED_HOSTS: '["${PUBLIC_HOST:-localhost}","localhost","127.0.0.1"]'
+      AUTH_SECURE_COOKIE: ${AUTH_SECURE_COOKIE:-true}
+    command: ["python", "-m", "app.interfaces.cli.database"]
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  app:
+    image: rag_qa-app
+    restart: unless-stopped
+    env_file: .env
+    environment: *app_env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      # 上传原始文件与删除修复日志
+      - app_data:/app/data
+    ports:
+      # 后端只对本机开放，外部统一走 web(80)
+      - "127.0.0.1:8000:8000"
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+
+volumes:
+  pg_data:
+  app_data:
