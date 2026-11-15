@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 
+from app.interfaces.http.container_runtime import current_container
 from app.application.insights.refusals import RefusalInsightService
 from app.application.insights.overview import InsightOverviewService
 from app.domain.auth import User
@@ -56,7 +57,7 @@ def get_insight_overview(request: Request) -> InsightOverviewService:
     Returns:
         同一运行的统计用例。
     """
-    return request.app.state.container.insight_overview_service
+    return current_container(request).insight_overview_service
 
 
 @router.get("/overview", response_model=InsightOverview)
@@ -90,7 +91,7 @@ def get_refusal_insights(request: Request) -> RefusalInsightService:
     Returns:
         带审计的拒答洞察服务。
     """
-    return request.app.state.container.refusal_insight_service
+    return current_container(request).refusal_insight_service
 
 
 @router.get("/refusals", response_model=RefusalPage | RefusalClusterPage)
@@ -115,7 +116,7 @@ def list_refusals(
     response.headers["Cache-Control"] = "no-store"
     try:
         if query.group == "cluster":
-            service = request.app.state.container.refusal_cluster_service
+            service = current_container(request).refusal_cluster_service
             return service.list(
                 user.id, days=query.days, limit=query.limit,
                 kb_id=query.kb_id, cursor=query.cursor,

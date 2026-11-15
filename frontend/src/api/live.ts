@@ -14,6 +14,7 @@ import type {
   KbInsight,
   KbScope,
   KnowledgeBase,
+  ModelSettings,
   RefusalRecord,
   User,
 } from "./types";
@@ -399,6 +400,44 @@ export function createLiveApi(): Api {
           };
         });
       },
+
+      async getModelSettings() {
+        return toModelSettings(await request<Raw>("/api/admin/settings/models"));
+      },
+
+      async updateModelSettings(values) {
+        return toModelSettings(await request<Raw>("/api/admin/settings/models", {
+          method: "PUT",
+          body: JSON.stringify({ values }),
+        }));
+      },
     },
+  };
+}
+
+function settingValue(value: unknown): string | number | null {
+  return typeof value === "string" || typeof value === "number" ? value : null;
+}
+
+function toModelSettings(raw: Raw): ModelSettings {
+  const groups = Array.isArray(raw.groups) ? (raw.groups as Raw[]) : [];
+  return {
+    storedEmbeddingDimensions:
+      typeof raw.stored_embedding_dimensions === "number" ? raw.stored_embedding_dimensions : null,
+    groups: groups.map((group) => ({
+      id: String(group.id),
+      title: String(group.title ?? ""),
+      description: String(group.description ?? ""),
+      fields: (Array.isArray(group.fields) ? (group.fields as Raw[]) : []).map((field) => ({
+        name: String(field.name),
+        envKey: String(field.env_key ?? field.name),
+        label: String(field.label ?? field.name),
+        kind: field.kind === "secret" || field.kind === "url" || field.kind === "int" ? field.kind : "text",
+        hint: String(field.hint ?? ""),
+        value: settingValue(field.value),
+        defaultValue: settingValue(field.default),
+        overriddenByEnvironment: field.overridden_by_environment === true,
+      })),
+    })),
   };
 }

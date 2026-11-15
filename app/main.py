@@ -15,6 +15,8 @@ from app.bootstrap.container import ApplicationContainer
 from app.bootstrap.container import build_application_container
 from app.config import Settings
 from app.config import get_settings
+from app.interfaces.http.container_runtime import ContainerLeaseMiddleware
+from app.interfaces.http.container_runtime import ContainerRuntime
 from app.interfaces.http.error_handlers import register_error_handlers
 from app.interfaces.http.router import router
 from app.utils.logger import configure_logging
@@ -26,11 +28,13 @@ logger = logging.getLogger(__name__)
 
 
 async def _maintain_traces(
-    container: ApplicationContainer, interval_seconds: float,
+    application: FastAPI, interval_seconds: float,
 ) -> None:
     # 不在启动时打开数据库，保留health与无请求场景的惰性装配行为。
     while True:
         await anyio.sleep(interval_seconds)
+        # 每轮读取当前容器：管理员修改模型配置后容器会被热替换。
+        container: ApplicationContainer = application.state.container
         try:
             await anyio.to_thread.run_sync(container.prune_expired_traces)
         except TraceStorageError:
@@ -48,11 +52,11 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         应用处理请求期间的生命周期控制权。
     """
     try:
-        application.state.container.start_ingestion_worker()
+        application.state.container_runtime.start_ingestion_worker()
         failure: BaseException | None = None
         async with anyio.create_task_group() as tasks:
             tasks.start_soon(
-                _maintain_traces, application.state.container,
+                _maintain_traces, application,
                 application.state.trace_cleanup_interval_seconds,
             )
             try:
@@ -66,7 +70,9 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
             raise failure
     finally:
         with anyio.CancelScope(shield=True):
-            await anyio.to_thread.run_sync(application.state.container.close)
+            await anyio.to_thread.run_sync(
+                application.state.container_runtime.close_all,
+            )
 
 
 def create_app(
@@ -95,6 +101,9 @@ def create_app(
         lifespan=lifespan,
     )
     application.state.container = container
+    # 模型配置在线修改后，用同一工厂创建新容器并热替换。
+    runtime = ContainerRuntime(application.state, container_factory)
+    application.state.container_runtime = runtime
     application.state.trace_cleanup_interval_seconds = (
         application_settings.trace_cleanup_interval_seconds
     )
@@ -110,6 +119,8 @@ def create_app(
         TrustedHostMiddleware,
         allowed_hosts=list(application_settings.http_allowed_hosts),
     )
+    # 最后添加的中间件在最外层：请求一进来就固定容器，直到响应发送完毕。
+    application.add_middleware(ContainerLeaseMiddleware, runtime=runtime)
     register_error_handlers(application)
     application.include_router(router)
     return application

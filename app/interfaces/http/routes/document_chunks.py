@@ -11,6 +11,7 @@ from fastapi import Query
 from fastapi import Request
 from fastapi import Response
 
+from app.interfaces.http.container_runtime import current_container
 from app.application.documents.chunks import AdminDocumentChunksService
 from app.domain.auth import User
 from app.domain.document_diagnostics import DiagnosticChunkPage
@@ -29,7 +30,7 @@ def get_admin_document_chunks(request: Request) -> AdminDocumentChunksService:
     Returns:
         同一运行时的分页用例。
     """
-    return request.app.state.container.admin_document_chunks
+    return current_container(request).admin_document_chunks
 
 
 @router.get("/{doc_id}/chunks", response_model=DiagnosticChunkPage)

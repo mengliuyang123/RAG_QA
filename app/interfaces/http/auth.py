@@ -7,6 +7,7 @@ from typing import Annotated
 from fastapi import Depends
 from fastapi import Request
 
+from app.interfaces.http.container_runtime import current_container
 from app.application.auth.service import AuthService
 from app.application.auth.service import token_digest
 from app.application.errors import CSRFError
@@ -30,7 +31,7 @@ def get_auth_service(request: Request) -> AuthService:
     Returns:
         共享认证服务。
     """
-    return request.app.state.container.auth_service
+    return current_container(request).auth_service
 
 
 def check_request_origin(request: Request) -> None:
@@ -47,7 +48,7 @@ def check_request_origin(request: Request) -> None:
         if request.headers.get("sec-fetch-site") == "cross-site":
             raise CSRFError("请求来源不受信任")
         return
-    settings = request.app.state.container.settings
+    settings = current_container(request).settings
     current_origin = f"{request.url.scheme}://{request.url.netloc}"
     if origin != current_origin and origin not in settings.cors_allowed_origins:
         raise CSRFError("请求来源不受信任")

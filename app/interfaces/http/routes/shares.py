@@ -9,6 +9,7 @@ from fastapi import Depends
 from fastapi import Request
 from fastapi import Response
 
+from app.interfaces.http.container_runtime import current_container
 from app.application.shares import ShareService
 from app.domain.auth import User
 from app.domain.shares import ShareLink
@@ -29,7 +30,7 @@ def get_share_service(request: Request) -> ShareService:
     Returns:
         惰性共享的用例。
     """
-    return request.app.state.container.share_service
+    return current_container(request).share_service
 
 
 @router.post("/turns/{turn_id}/shares", response_model=ShareLink)

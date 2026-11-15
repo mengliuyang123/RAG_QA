@@ -17,6 +17,7 @@ import type {
   KbDocument,
   KbScope,
   KnowledgeBase,
+  ModelSettings,
   StreamHandlers,
   Turn,
   User,
@@ -614,6 +615,72 @@ export function createMockApi(): Api {
         await sleep(120);
         return MOCK_REFUSALS;
       },
+
+      async getModelSettings() {
+        await sleep(120);
+        return structuredClone(modelSettings);
+      },
+
+      async updateModelSettings(values) {
+        await sleep(300);
+        const fields = new Map(modelSettings.groups.flatMap((group) => group.fields).map((field) => [field.name, field]));
+        for (const name of Object.keys(values)) {
+          if (!fields.has(name)) throw new ApiError(422, `不支持在线修改的配置项：${name}`);
+        }
+        // 与后端一致：已入库向量为 1536 维，改成其他维度会被拒绝。
+        const dimensions = values.embedding_dimensions;
+        if (dimensions !== undefined && dimensions !== null && dimensions !== "" && Number(dimensions) !== 1536) {
+          throw new ApiError(409, `新向量模型输出 ${dimensions} 维，已入库的向量是 1536 维，两者不兼容。请保持原维度，或清空知识库后重新入库。`);
+        }
+        for (const [name, value] of Object.entries(values)) {
+          const field = fields.get(name)!;
+          field.value = value === null || value === "" ? field.defaultValue : field.kind === "int" ? Number(value) : value;
+        }
+        return structuredClone(modelSettings);
+      },
     },
   };
 }
+
+const field = (
+  name: string, label: string, kind: "secret" | "url" | "text" | "int",
+  value: string | number | null, defaultValue: string | number | null = null, hint = "",
+) => ({ name, envKey: name.toUpperCase(), label, kind, hint, value, defaultValue, overriddenByEnvironment: false });
+
+const INHERIT = "留空时沿用生成模型的配置";
+
+// 演示数据：结构与后端 GET /api/admin/settings/models 一致，Key 为假值。
+const modelSettings: ModelSettings = {
+  storedEmbeddingDimensions: 1536,
+  groups: [
+    { id: "llm", title: "生成模型", description: "Agent 规划、检索决策和最终回答使用的主模型。", fields: [
+      field("llm_api_key", "API Key", "secret", "sk-demo-llm-key", null, "留空且地址为 OpenAI 官方时，使用下方的 OpenAI 通用 Key"),
+      field("llm_base_url", "API 地址", "url", "https://api.openai.com/v1", "https://api.openai.com/v1", "OpenAI 兼容接口的根地址"),
+      field("llm_model", "模型名", "text", "gpt-4o-mini", "gpt-4o-mini"),
+    ] },
+    { id: "understanding", title: "问题理解模型", description: "改写问题、判断走哪条处理通道。可以单独配一个更快更便宜的模型。", fields: [
+      field("understanding_api_key", "API Key", "secret", null, null, INHERIT),
+      field("understanding_base_url", "API 地址", "url", null, null, INHERIT),
+      field("understanding_model", "模型名", "text", null, null, INHERIT),
+    ] },
+    { id: "judge", title: "质量审核模型", description: "判断检索证据是否充分、审核回答质量。", fields: [
+      field("judge_api_key", "API Key", "secret", null, null, INHERIT),
+      field("judge_base_url", "API 地址", "url", null, null, INHERIT),
+      field("judge_model", "模型名", "text", null, null, INHERIT),
+    ] },
+    { id: "embedding", title: "向量模型", description: "文档入库和提问检索时把文本转成向量。更换模型或维度后，已有向量不再兼容。", fields: [
+      field("embedding_api_key", "API Key", "secret", "sk-demo-embed-key", null, "留空且地址为 OpenAI 官方时，使用下方的 OpenAI 通用 Key"),
+      field("embedding_base_url", "API 地址", "url", "https://api.openai.com/v1", "https://api.openai.com/v1"),
+      field("embedding_model", "模型名", "text", "text-embedding-3-small", "text-embedding-3-small"),
+      field("embedding_dimensions", "向量维度", "int", null, null, "留空使用模型默认维度；只有支持 dimensions 参数的模型（如 text-embedding-3）才能指定"),
+    ] },
+    { id: "reranker", title: "重排序模型", description: "hybrid_rerank 策略下对召回结果精排。", fields: [
+      field("reranker_api_key", "API Key", "secret", null, null, "不配置时不启用重排序"),
+      field("reranker_base_url", "API 地址", "url", null),
+      field("reranker_model", "模型名", "text", "qwen3-rerank", "qwen3-rerank"),
+    ] },
+    { id: "shared", title: "OpenAI 通用 Key", description: "各模型地址为 OpenAI 官方且没有单独配置 Key 时使用。", fields: [
+      field("openai_api_key", "API Key", "secret", null),
+    ] },
+  ],
+};

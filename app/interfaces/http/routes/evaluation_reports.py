@@ -9,6 +9,7 @@ from fastapi import Request
 from fastapi import Response
 from pydantic import JsonValue
 
+from app.interfaces.http.container_runtime import current_container
 from app.application.evaluation_reports import EvaluationReportService
 
 
@@ -24,7 +25,7 @@ def get_evaluation_reports(request: Request) -> EvaluationReportService:
     Returns:
         隔离的报告用例。
     """
-    return request.app.state.container.evaluation_report_service
+    return current_container(request).evaluation_report_service
 
 
 @router.get("/latest", responses={

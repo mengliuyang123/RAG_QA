@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from starlette.concurrency import run_in_threadpool
 
+from app.interfaces.http.container_runtime import current_container
 from app.application.ingestion.jobs import IngestionJobService
 from app.domain.auth import User
 from app.domain.ingestion_jobs import IngestionJob
@@ -50,7 +51,7 @@ def get_job_service(request: Request) -> IngestionJobService:
     Returns:
         持久入队与进度服务。
     """
-    return request.app.state.container.ingestion_job_service
+    return current_container(request).ingestion_job_service
 
 
 @router.post(
@@ -78,7 +79,7 @@ async def submit_ingestion(
         202对应的queued标识，实际进度通过GET读取。
     """
     try:
-        worker = request.app.state.container.ingestion_worker
+        worker = current_container(request).ingestion_worker
         worker.ensure_running()
         content = await file.read(service.max_upload_size + 1)
         queued = await run_in_threadpool(

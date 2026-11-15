@@ -11,6 +11,7 @@ import pytest
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
+from app.application.errors import LLMGenerationError
 from app.application.errors import ConversationAgentError
 from app.application.errors import ConversationTimeoutError
 from app.application.conversations.service import ConversationService
@@ -327,17 +328,15 @@ def test_upgrade_cannot_restore_consumed_repair_attempt() -> None:
 
 
 def test_no_extra_search_when_seed_has_used_all_evidence_judgements() -> None:
-    """没有剩余判断额度时不得继续产生无法审核的新检索结果。"""
+    """判断额度用完后复用批准证据生成，而不是把工具循环当作证据不足。"""
     retriever = _Retriever({})
     result = _seed_agent(
-        _Model([AIMessage(content="", tool_calls=[_call("B")])]),
-        retriever, _Evaluator([]),
-    ).run(
-        uuid4(), "比较 A/B", [],
-        seed=_seed(_enough([5]), judgements=3),
-    )
-    assert result.answer == AGENT_REFUSAL_ANSWER
+        _Model([AIMessage(content='A 使用 SQLite[5]')]),
+        retriever, _Evaluator([], [_passed()]),
+    ).run(uuid4(), '比较 A/B', [], seed=_seed(_enough([5]), judgements=3))
+    assert result.answer == 'A 使用 SQLite[5]'
     assert result.retrieval_calls == 1
+    assert result.execution.budget.answer_assessments == 1
     assert retriever.queries == []
 
 
@@ -675,20 +674,23 @@ def test_default_evaluator_uses_same_model_with_separate_json_calls() -> None:
 
 
 def test_reassessment_can_restore_previously_excluded_evidence() -> None:
+    # 只有证据审核给出有效缺口查询才能补查；已充分时不再让模型自行重开检索。
     model = _Model([
-        AIMessage(content="", tool_calls=[_call("A")]),
-        AIMessage(content="", tool_calls=[_call("B")]),
-        AIMessage(content="A SQLite[2]，B PostgreSQL[1][3]"),
+        AIMessage(content='', tool_calls=[_call('A')]),
+        AIMessage(content='A SQLite[2]，B PostgreSQL[1][3]'),
     ])
     retriever = _Retriever({
-        "A": [_chunk(1, "RESTORED_CONTEXT B 历史"), _chunk(2, "A SQLite")],
-        "B": [_chunk(3, "B PostgreSQL")],
+        'A': [_chunk(1, 'RESTORED_CONTEXT B 历史'), _chunk(2, 'A SQLite')],
+        'B': [_chunk(3, 'B PostgreSQL')],
     })
-    result = _agent(model, retriever, _Evaluator([
-        _enough([2]), _enough([1, 2, 3]),
-    ], [_passed()])).run(uuid4(), "比较 A/B", [])
-    assert "RESTORED_CONTEXT" not in json.dumps(model.messages[1])
-    assert "RESTORED_CONTEXT" in json.dumps(model.messages[2])
+    evaluator = _Evaluator([
+        EvidenceAssessment(sufficient=False,relevant_numbers=[2],missing_information=['缺少 B'],next_query='B'),
+        _enough([1, 2, 3]),
+    ], [_passed()])
+    result = _agent(model, retriever, evaluator).run(uuid4(), '比较 A/B', [])
+    assert retriever.queries == ['A', 'B']
+    assert 'RESTORED_CONTEXT' in str(model.messages[-1])
+    assert 'RESTORED_CONTEXT' in str(evaluator.cited[-1])
     assert len(result.citations) == 3
 
 
@@ -732,11 +734,10 @@ def test_citation_to_rejected_evidence_is_not_accepted_after_repair() -> None:
         AIMessage(content="无关结论[1]"),
         AIMessage(content="仍是无关结论[1]"),
     ])
-    result = _agent(model, _Retriever({"A": [
-        _chunk(1, "海洋生物"), _chunk(2, "A SQLite"),
-    ]}), _Evaluator([_enough([2])])).run(uuid4(), "A 存储", [])
-    assert result.answer == AGENT_REFUSAL_ANSWER
-    assert result.citations == []
+    with pytest.raises(LLMGenerationError):
+        _agent(model, _Retriever({'A': [
+            _chunk(1, '海洋生物'), _chunk(2, 'A SQLite'),
+        ]}), _Evaluator([_enough([2])])).run(uuid4(), 'A 存储', [])
 
 
 def test_grouped_tools_deduplicate_queries_and_preserve_message_pairs() -> None:

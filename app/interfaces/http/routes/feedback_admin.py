@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 
+from app.interfaces.http.container_runtime import current_container
 from app.application.feedback.admin import FeedbackAdminService
 from app.domain.auth import User
 from app.domain.feedback import AdminFeedbackItem
@@ -50,7 +51,7 @@ def get_feedback_admin(request: Request) -> FeedbackAdminService:
     Returns:
         后台反馈服务。
     """
-    return request.app.state.container.feedback_admin_service
+    return current_container(request).feedback_admin_service
 
 
 @router.get("", response_model=AdminFeedbackPage)

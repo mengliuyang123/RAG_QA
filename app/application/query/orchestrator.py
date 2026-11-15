@@ -12,6 +12,7 @@ from app.application.conversations.ports import StatusCallback
 from app.application.errors import ConversationAgentError
 from app.application.errors import ConversationTimeoutError
 from app.application.errors import LLMError
+from app.application.errors import LLMGenerationError
 from app.application.execution_control import check_cancellation
 from app.application.knowledge.scopes import ScopeResolver
 from app.application.knowledge.scopes import ScopePlan
@@ -241,6 +242,9 @@ class QueryOrchestrator:
         refused = result.answer == KNOWLEDGE_REFUSAL_ANSWER
         refusal = None
         if refused:
+            if approved and execution.assessment is not None and execution.assessment.sufficient:
+                # 不能把已判充分但未完成生成的执行结果伪装成资料不足。
+                raise LLMGenerationError('证据已充分，但知识通道未完成回答生成')
             missing = result.quality_issues
             if not missing and execution.assessment is not None:
                 missing = tuple(execution.assessment.missing_information)

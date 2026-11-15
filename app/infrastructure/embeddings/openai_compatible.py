@@ -37,6 +37,7 @@ class OpenAICompatibleEmbeddingProvider:
         client: Any | None = None,
         timeout_seconds: float = 30.0,
         max_retries: int = 0,
+        dimensions: int | None = None,
     ) -> None:
         """创建 provider；测试可注入兼容 OpenAI 接口的客户端。
 
@@ -48,6 +49,7 @@ class OpenAICompatibleEmbeddingProvider:
             client: 可选的 OpenAI 兼容客户端。
             timeout_seconds: 单次模型请求等待上限。
             max_retries: SDK 额外重试次数。
+            dimensions: 可选的输出向量维度；为空时不传，使用模型默认维度。
 
         Returns:
             None。
@@ -60,6 +62,8 @@ class OpenAICompatibleEmbeddingProvider:
             raise ValueError("batch_size 必须大于 0")
         if timeout_seconds <= 0 or max_retries < 0:
             raise ValueError("请求超时与重试参数无效")
+        if dimensions is not None and dimensions <= 0:
+            raise ValueError("dimensions 必须大于 0")
         self._owns_client = client is None
         if client is None:
             if not api_key or not api_key.strip():
@@ -76,6 +80,7 @@ class OpenAICompatibleEmbeddingProvider:
         self._closed = False
         self.model = model
         self.batch_size = batch_size
+        self.dimensions = dimensions
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         """分批向量化文本，并验证响应数量、顺序和维度。
@@ -105,6 +110,11 @@ class OpenAICompatibleEmbeddingProvider:
                     response = self._client.embeddings.create(
                         input=batch,
                         model=self.model,
+                        # 只有显式配置时才传，避免不支持该参数的兼容服务报错。
+                        **(
+                            {"dimensions": self.dimensions}
+                            if self.dimensions is not None else {}
+                        ),
                     )
                     call.usage = extract_token_usage(
                         getattr(response, "usage", None), no_generation=True,

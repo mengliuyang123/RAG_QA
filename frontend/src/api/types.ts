@@ -197,6 +197,34 @@ export interface RefusalRecord {
 
 // 后端尚未实现的能力。live 模式下为 false 的功能会退回本地数据，
 // 页面据此显示"示例数据"提示，避免把假数据当成真实结果。
+// 管理员在线修改的模型配置。secret 为 API Key，按产品要求后端返回明文。
+export type ModelSettingKind = "secret" | "url" | "text" | "int";
+
+export interface ModelSettingField {
+  name: string;
+  envKey: string;
+  label: string;
+  kind: ModelSettingKind;
+  hint: string;
+  value: string | number | null;
+  defaultValue: string | number | null;
+  /** 进程环境变量里也有同名键：重启后会以环境变量为准，.env 里的值不生效。 */
+  overriddenByEnvironment: boolean;
+}
+
+export interface ModelSettingGroup {
+  id: string;
+  title: string;
+  description: string;
+  fields: ModelSettingField[];
+}
+
+export interface ModelSettings {
+  groups: ModelSettingGroup[];
+  /** 向量索引已锁定的维度；还没有入库任何向量时为 null。 */
+  storedEmbeddingDimensions: number | null;
+}
+
 export type Feature =
   | "auth"
   | "knowledgeBases"
@@ -243,5 +271,8 @@ export interface Api {
     updateKnowledgeBase(kbId: string, description: string): Promise<void>;
     insights(): Promise<KbInsight[]>;
     refusals(): Promise<RefusalRecord[]>;
+    getModelSettings(): Promise<ModelSettings>;
+    /** 只提交改动的字段；null 表示清空（恢复默认）。保存成功后立即生效。 */
+    updateModelSettings(values: Record<string, string | number | null>): Promise<ModelSettings>;
   };
 }

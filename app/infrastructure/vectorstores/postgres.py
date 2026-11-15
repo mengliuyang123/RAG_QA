@@ -61,6 +61,12 @@ class PostgresVectorStore:
                 raise VectorStoreError('向量集合不存在')
             return dict(row['metadata'])
 
+    def stored_dimensions(self) -> int | None:
+        """返回集合首次写入时锁定的向量维度；还没有向量时为 None。"""
+        with self._connection() as connection:
+            row = connection.execute('SELECT dimensions FROM vector_collections WHERE name=%s', (self._collection_name,)).fetchone()
+            return None if row is None else row['dimensions']
+
     def update_collection_metadata(self, metadata: dict[str, str | int]) -> None:
         if metadata.get('hnsw:space', 'cosine') != 'cosine':
             raise VectorStoreError('hnsw:space 必须保持为 cosine')

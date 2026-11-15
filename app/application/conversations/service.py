@@ -36,6 +36,7 @@ from app.application.errors import EmbeddingError
 from app.application.errors import EmbeddingTimeoutError
 from app.application.errors import KnowledgeBaseStorageError
 from app.application.errors import LLMError
+from app.application.errors import LLMGenerationError
 from app.application.errors import LLMTimeoutError
 from app.application.errors import RerankerUnavailableError
 from app.application.errors import VectorStoreError
@@ -393,6 +394,11 @@ class ConversationService:
             except (EmbeddingError, VectorStoreError, RerankerUnavailableError):
                 sink.emit(ErrorConversationEvent(data=ErrorConversationData(
                     code="retrieval_error", message="检索服务暂时不可用",
+                )))
+                return
+            except LLMGenerationError:
+                sink.emit(ErrorConversationEvent(data=ErrorConversationData(
+                    code='generation_error', message='回答生成未能完成，请重试',
                 )))
                 return
             except LLMError:

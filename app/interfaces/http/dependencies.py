@@ -3,6 +3,7 @@
 
 from fastapi import Request
 
+from app.interfaces.http.container_runtime import current_container
 from app.application.documents.service import DocumentService
 from app.application.conversations.service import ConversationService
 from app.application.ingestion.service import UploadService
@@ -12,7 +13,7 @@ from app.bootstrap.container import ApplicationContainer
 
 def get_conversation_service(request: Request) -> ConversationService:
     """返回当前容器共享的多轮会话应用服务。"""
-    container: ApplicationContainer = request.app.state.container
+    container: ApplicationContainer = current_container(request)
     return container.conversation_service
 
 
@@ -25,7 +26,7 @@ def get_query_service(request: Request) -> RoutedQueryService:
     Returns:
         当前应用惰性创建并共享的查询服务。
     """
-    container: ApplicationContainer = request.app.state.container
+    container: ApplicationContainer = current_container(request)
     return container.query_service
 
 
@@ -38,7 +39,7 @@ def get_upload_service(request: Request) -> UploadService:
     Returns:
         当前应用惰性创建并共享的上传服务。
     """
-    container: ApplicationContainer = request.app.state.container
+    container: ApplicationContainer = current_container(request)
     return container.upload_service
 
 
@@ -51,5 +52,5 @@ def get_document_service(request: Request) -> DocumentService:
     Returns:
         当前应用惰性创建并共享的文档服务。
     """
-    container: ApplicationContainer = request.app.state.container
+    container: ApplicationContainer = current_container(request)
     return container.document_service

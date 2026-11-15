@@ -85,6 +85,8 @@ class Settings(BaseSettings):
     embedding_api_key: str | None = None
     embedding_base_url: str = OPENAI_BASE_URL
     embedding_model: str = "text-embedding-3-small"
+    # 为空时使用模型默认维度；更换维度后已有向量不再兼容，需要重建索引。
+    embedding_dimensions: int | None = Field(default=None, ge=1, le=16000)
 
     reranker_api_key: str | None = None
     reranker_base_url: str | None = None

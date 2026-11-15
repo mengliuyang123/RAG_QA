@@ -111,10 +111,22 @@ def test_agent_repairs_versioned_seed_without_losing_scope_or_budget(
         AIMessage(content="首份草稿引用错误[99]"),
         AIMessage(content=repaired),
     ])
-    result = LangGraphConversationAgent(
+    agent = LangGraphConversationAgent(
         model, retriever, InMemorySaver(), top_k=5,
         quality_evaluator=ApprovedQuality(), clock=lambda: 2.0,
-    ).run(uuid4(), "如何保存状态？", [], seed=seed, kb_ids=("ops",))
+    )
+    execution_id = uuid4()
+    if not repair_succeeds:
+        from app.application.errors import LLMGenerationError
+        with pytest.raises(LLMGenerationError):
+            agent.run(execution_id, '如何保存状态？', [], seed=seed, kb_ids=('ops',))
+        state = agent._graph.get_state({'configurable':{'thread_id':str(execution_id)}}).values
+        assert state['execution_budget']['deadline'] == 100.0
+        assert state['execution_budget']['repair_attempted'] is True
+        assert state['kb_ids'] == ['ops'] and state['final_citations'] == []
+        assert retriever.calls == []
+        return
+    result = agent.run(execution_id, '如何保存状态？', [], seed=seed, kb_ids=('ops',))
     assert result.retrieval_calls == 1
     assert retriever.calls == []
     assert result.execution.budget.repair_attempted is True

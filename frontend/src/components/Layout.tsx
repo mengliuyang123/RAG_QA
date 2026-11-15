@@ -15,6 +15,7 @@ import {
   PlusIcon,
   SearchIcon,
   SettingsIcon,
+  SlidersHorizontalIcon,
   TrashIcon,
 } from "lucide-react";
 import { createContext, Fragment, useContext, useEffect, useRef, useState, type ReactNode } from "react";
@@ -242,6 +243,7 @@ function Sidebar({ open }: { open: boolean }) {
             <div className="px-2.5 pt-2 pb-1 text-xs font-medium text-muted-foreground">管理后台</div>
             <NavItem to="/admin/kb" icon={<SettingsIcon />} label="知识库管理" />
             <NavItem to="/admin/insights" icon={<BarChart3Icon />} label="问题洞察" />
+            <NavItem to="/admin/settings" icon={<SlidersHorizontalIcon />} label="模型配置" />
           </>
         )}
         <div className="mt-1 flex h-10 items-center gap-2 px-2.5">

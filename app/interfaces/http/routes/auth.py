@@ -12,6 +12,7 @@ from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import SecretStr
 
+from app.interfaces.http.container_runtime import current_container
 from app.domain.auth import User
 from app.interfaces.http.auth import CSRF_COOKIE
 from app.interfaces.http.auth import SESSION_COOKIE
@@ -53,7 +54,7 @@ def login(
         client_id=request.client.host if request.client else "unknown",
         previous_token=request.cookies.get(SESSION_COOKIE),
     )
-    settings = request.app.state.container.settings
+    settings = current_container(request).settings
     for name, value, http_only in (
         (SESSION_COOKIE, result.session_token, True),
         (CSRF_COOKIE, result.csrf_token, False),
@@ -89,7 +90,7 @@ def logout(
     for name in (SESSION_COOKIE, CSRF_COOKIE):
         response.delete_cookie(
             name, path="/",
-            secure=request.app.state.container.settings.auth_secure_cookie,
+            secure=current_container(request).settings.auth_secure_cookie,
         )
     return response
 
@@ -110,5 +111,5 @@ def me(
         公开用户与真实提问次数额度，不冒充日限额或模型Token余额。
     """
     response.headers["Cache-Control"] = "no-store"
-    quota = request.app.state.container.question_admission.quota(user.id)
+    quota = current_container(request).question_admission.quota(user.id)
     return {**user.model_dump(mode="json"), "quota": quota.model_dump()}

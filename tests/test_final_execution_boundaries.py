@@ -37,7 +37,7 @@ def test_extra_batched_tool_does_not_discard_third_retrieval() -> None:
         None。
     """
     calls = []
-    for query in ("C", "B 存储方式", "D"):
+    for query in ("A", "C", "B 存储方式", "D"):
         calls.append({
             "name": "search_knowledge_base", "id": query,
             "args": {"query": query}, "type": "tool_call",
@@ -50,11 +50,11 @@ def test_extra_batched_tool_does_not_discard_third_retrieval() -> None:
             AIMessage(content="A使用SQLite[2]，B使用PostgreSQL[3]"),
         ]), retriever, InMemorySaver(), top_k=5, quality_evaluator=quality,
         clock=lambda: 1.0,
-    ).run(uuid4(), "比较A和B", [], initial_query="A")
+    ).run(uuid4(), "比较A和B", [])
     assert [call[0] for call in retriever.calls] == ["A", "C", "B 存储方式"]
-    assert quality.calls == 2
+    assert quality.calls == 1
     assert result.execution.budget.retrieval_calls == 3
-    assert result.execution.budget.evidence_assessments == 2
+    assert result.execution.budget.evidence_assessments == 1
     assert result.answer == "A使用SQLite[2]，B使用PostgreSQL[3]"
     assert [citation.position for citation in result.citations] == [2, 3]
 

@@ -226,6 +226,7 @@ def _create_embedding_provider(
     *,
     timeout_seconds: float = 30.0,
     max_retries: int = 0,
+    dimensions: int | None = None,
 ) -> EmbeddingProvider:
     return OpenAICompatibleEmbeddingProvider(
         api_key=api_key,
@@ -234,6 +235,7 @@ def _create_embedding_provider(
         batch_size=batch_size,
         timeout_seconds=timeout_seconds,
         max_retries=max_retries,
+        dimensions=dimensions,
     )
 
 
@@ -720,6 +722,7 @@ def configured_adapter_factories(settings: Settings) -> AdapterFactories:
             _create_embedding_provider,
             timeout_seconds=settings.embedding_timeout_seconds,
             max_retries=settings.model_max_retries,
+            dimensions=settings.embedding_dimensions,
         ),
         llm_provider=partial(
             _create_llm_provider,
