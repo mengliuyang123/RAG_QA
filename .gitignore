@@ -34,3 +34,5 @@ evaluation/results/runs/
 # Local tool caches and personal notes
 .vite/
 .workbuddy/
+
+docs/
