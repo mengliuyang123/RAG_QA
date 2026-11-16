@@ -35,4 +35,5 @@ evaluation/results/runs/
 .vite/
 .workbuddy/
 
-docs/
+docs/*
+!docs/images/
