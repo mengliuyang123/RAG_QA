@@ -15,6 +15,7 @@ from app.application.errors import SelfLockoutError
 from app.application.errors import UnauthenticatedError
 from app.application.errors import UserAlreadyExistsError
 from app.application.errors import UserNotFoundError
+from app.application.errors import WrongPasswordError
 
 
 async def _handle_auth_error(request: Request, error: Exception) -> JSONResponse:
@@ -28,7 +29,7 @@ async def _handle_auth_error(request: Request, error: Exception) -> JSONResponse
     elif isinstance(error, CSRFError):
         code, message, status = "csrf_failed", "请求来源或安全令牌无效", 403
     elif isinstance(error, ForbiddenError):
-        code, message, status = "forbidden", "此操作仅限管理员", 403
+        code, message, status = "forbidden", str(error) or "此操作仅限管理员", 403
     elif isinstance(error, LoginRateLimitError):
         code, message, status = "rate_limited", "登录尝试过于频繁，请稍后重试", 429
         headers["Retry-After"] = str(error.retry_after)
@@ -51,6 +52,9 @@ async def _handle_user_admin_error(request: Request, error: Exception) -> JSONRe
         code, message, status = "last_admin", "至少需要保留一名启用的管理员", 409
     elif isinstance(error, SelfLockoutError):
         code, message, status = "self_lockout", "不能降级或禁用自己的账号", 409
+    elif isinstance(error, WrongPasswordError):
+        # 不用401：前端收到401会当作登录失效并退出。
+        code, message, status = "wrong_password", "当前口令不正确", 400
     return JSONResponse(
         status_code=status, headers={"Cache-Control": "no-store"},
         content={"detail": message, "error": {
@@ -73,5 +77,8 @@ def register_auth_error_handlers(application: FastAPI) -> None:
         ForbiddenError, LoginRateLimitError, AuthStorageError,
     ):
         application.add_exception_handler(error, _handle_auth_error)
-    for error in (UserNotFoundError, UserAlreadyExistsError, LastAdminError, SelfLockoutError):
+    for error in (
+        UserNotFoundError, UserAlreadyExistsError, LastAdminError, SelfLockoutError,
+        WrongPasswordError,
+    ):
         application.add_exception_handler(error, _handle_user_admin_error)

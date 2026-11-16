@@ -165,12 +165,15 @@ class PostgresAuthRepository:
         except psycopg.Error as exc:
             raise AuthStorageError("账号修改失败") from exc
 
-    def set_password(self, user_id: UUID, password_hash: str) -> None:
-        """替换口令并撤销该账号全部会话，旧口令登录的浏览器需要重新登录。
+    def set_password(
+        self, user_id: UUID, password_hash: str, *, keep_token_hash: str | None = None,
+    ) -> None:
+        """替换口令并撤销该账号会话，旧口令登录的浏览器需要重新登录。
 
         Args:
             user_id: 目标账号。
             password_hash: 新哈希。
+            keep_token_hash: 用户自己改口令时保留当前浏览器的会话。
 
         Returns:
             None。
@@ -185,7 +188,8 @@ class PostgresAuthRepository:
                 if updated == 0:
                     raise UserNotFoundError("账号不存在")
                 connection.execute(
-                    "DELETE FROM auth_sessions WHERE user_id = %s", (str(user_id),),
+                    "DELETE FROM auth_sessions WHERE user_id = %s AND token_hash <> %s",
+                    (str(user_id), keep_token_hash or ""),
                 )
         except psycopg.Error as exc:
             raise AuthStorageError("口令重置失败") from exc

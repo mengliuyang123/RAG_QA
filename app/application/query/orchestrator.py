@@ -15,6 +15,7 @@ from app.application.errors import LLMError
 from app.application.errors import LLMGenerationError
 from app.application.execution_control import check_cancellation
 from app.application.knowledge.scopes import ScopeResolver
+from app.domain.knowledge_access import KbPermissions
 from app.application.knowledge.scopes import ScopePlan
 from app.application.ports.knowledge_bases import KnowledgeBaseRepository
 from app.application.ports.understanding import QuestionUnderstanding
@@ -50,6 +51,7 @@ class QueryOrchestrator:
         turn_timeout_seconds: float = 180.0,
         clock: Callable[[], float] = monotonic,
         traces: TraceService | None = None,
+        permissions: Callable[[UUID | None], KbPermissions] | None = None,
     ) -> None:
         """保存业务策略与由组合根注入的惰性知识执行器。
 
@@ -64,6 +66,7 @@ class QueryOrchestrator:
             turn_timeout_seconds: 理解、Fast和图共用的时间预算。
             clock: 单调时钟。
             traces: 由组合根提供的追踪服务，独立单元测试可不启用。
+            permissions: 按用户ID计算知识库权限；未提供时不受限。
         """
         if turn_timeout_seconds <= 0 or not 1 <= top_k <= 20:
             raise ValueError("执行器预算或结果上限无效")
@@ -77,6 +80,7 @@ class QueryOrchestrator:
         self._timeout = turn_timeout_seconds
         self._clock = clock
         self._traces = traces
+        self._permissions = permissions
 
     def run(
         self, conversation_id: UUID, question: str,
@@ -117,6 +121,7 @@ class QueryOrchestrator:
                 conversation_id, question, history, on_status,
                 kb_scope=kb_scope, requested_lane=requested_lane,
                 strategy=strategy, top_k=top_k, debug=debug, lane_policy=lane_policy,
+                user_id=user_id,
             )
         prepared = self._traces.claim_execution_trace(
             question, execution_id=conversation_id, entry=execution_entry,
@@ -142,6 +147,7 @@ class QueryOrchestrator:
                 conversation_id, question, history, on_status,
                 kb_scope=kb_scope, requested_lane=requested_lane,
                 strategy=strategy, top_k=top_k, debug=debug, lane_policy=lane_policy,
+                user_id=user_id,
             )
             metadata = result.metadata
             if metadata is None:
@@ -164,6 +170,7 @@ class QueryOrchestrator:
         strategy: RetrievalStrategy | str | None = None, top_k: int | None = None,
         debug: bool = False,
         lane_policy: Literal["online", "fast_only"] = "online",
+        user_id: UUID | None = None,
     ) -> AgentResult:
         original = question.strip()
         if not original:
@@ -176,7 +183,8 @@ class QueryOrchestrator:
             deadline=self._clock() + self._timeout,
         ))
         scope_request = kb_scope or KnowledgeScope()
-        plan = self._scope_resolver.resolve(scope_request)
+        allowed = self._allowed_kb_ids(user_id)
+        plan = self._scope_resolver.resolve(scope_request, allowed_kb_ids=allowed)
         if on_status is not None:
             on_status("understanding", None)
         self._ensure_time(bundle)
@@ -189,7 +197,8 @@ class QueryOrchestrator:
         }) as step:
             try:
                 output = self._understanding.understand(
-                    original, history_payload, self._catalog.list(),
+                    original, history_payload,
+                    [kb for kb in self._catalog.list() if allowed is None or kb.id in allowed],
                 )
                 payload = output.model_dump() if isinstance(output, QueryUnderstanding) else output
                 understood = QueryUnderstanding.model_validate(payload)
@@ -336,6 +345,11 @@ class QueryOrchestrator:
             bundle.budget.ensure_time(self._clock())
         except ExecutionDeadlineError as exc:
             raise ConversationTimeoutError("问答整轮时间预算已耗尽") from exc
+
+    def _allowed_kb_ids(self, user_id: UUID | None) -> frozenset[str] | None:
+        if self._permissions is None:
+            return None
+        return self._permissions(user_id).allowed([kb.id for kb in self._catalog.list()])
 
     def validate_scope(self, scope: KnowledgeScope) -> None:
         """在流响应头发出前验证范围，不调用任何模型。

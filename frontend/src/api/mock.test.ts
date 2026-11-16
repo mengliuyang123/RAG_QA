@@ -128,3 +128,37 @@ describe("mock user management rules", () => {
     expect(await api.admin.listGaps()).toHaveLength(1);
   });
 });
+
+describe("mock admin features", () => {
+  it("rejects a wrong current password and accepts the right one", async () => {
+    const api = createMockApi();
+    await expect(api.changePassword("nope", "replace-me-demo-passphrase")).rejects.toMatchObject({ code: "wrong_password" });
+    await expect(api.changePassword("demo-password-123", "short")).rejects.toMatchObject({ status: 422 });
+    await api.changePassword("demo-password-123", "replace-me-demo-passphrase");
+    await expect(api.changePassword("demo-password-123", "replace-me-demo-passphrase")).rejects.toMatchObject({ code: "wrong_password" });
+  });
+
+  it("publishes FAQ entries as one knowledge-base document", async () => {
+    const api = createMockApi();
+    const created = await api.admin.createFaq("ops", { question: "q1", answer: "a1" });
+    expect(created.publication?.status).toBe("queued");
+    const docs = await api.listKbDocuments("ops");
+    expect(docs.filter((doc) => doc.filename === created.filename)).toHaveLength(1);
+    await api.admin.createFaq("ops", { question: "q2", answer: "a2" });
+    expect((await api.listKbDocuments("ops")).filter((doc) => doc.filename === created.filename)).toHaveLength(1);
+    const state = await api.admin.listFaq("ops");
+    for (const entry of state.entries) await api.admin.deleteFaq("ops", entry.id);
+    expect((await api.listKbDocuments("ops")).some((doc) => doc.filename === created.filename)).toBe(false);
+  });
+
+  it("validates access members and document reviews", async () => {
+    const api = createMockApi();
+    await expect(api.admin.saveKbAccess("ops", { restricted: true, members: [
+      { userId: "u_ops", role: "viewer" }, { userId: "u_ops", role: "editor" },
+    ] })).rejects.toMatchObject({ status: 422 });
+    const saved = await api.admin.saveKbAccess("ops", { restricted: true, members: [{ userId: "u_ops", role: "editor" }] });
+    expect(saved.members[0].username).toBe("ops.wang");
+    await expect(api.admin.saveDocumentReview("ops", "missing", { reviewDueOn: null, outdated: true, note: null }))
+      .rejects.toMatchObject({ status: 404 });
+  });
+});

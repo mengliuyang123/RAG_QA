@@ -10,6 +10,11 @@ from fastapi import Response
 
 from app.application.knowledge.browse import KnowledgeBrowseService
 from app.domain.knowledge_bases import KB_ID_PATTERN
+from app.domain.knowledge_access import KbPermissions
+from app.interfaces.http.kb_permissions import ensure_editor
+from app.interfaces.http.kb_permissions import ensure_unrestricted
+from app.interfaces.http.kb_permissions import ensure_visible
+from app.interfaces.http.kb_permissions import kb_permissions
 from app.domain.suggestions import CuratedQuestionsUpdate
 from app.domain.suggestions import SuggestedQuestions
 from app.interfaces.http.routes.knowledge_browse import get_knowledge_browse
@@ -23,6 +28,7 @@ def replace_curated_questions(
     kb_id: Annotated[str, Path(pattern=KB_ID_PATTERN)],
     body: CuratedQuestionsUpdate, response: Response,
     service: Annotated[KnowledgeBrowseService, Depends(get_knowledge_browse)],
+    permissions: Annotated[KbPermissions, Depends(kb_permissions)],
 ) -> SuggestedQuestions:
     """管理员与CSRF校验后原子替换，空集合表示明确清空。
 
@@ -36,4 +42,5 @@ def replace_curated_questions(
         发布后的稳定预设集合，重复相同内容保持ID。
     """
     response.headers["Cache-Control"] = "no-store"
+    ensure_editor(permissions, kb_id)
     return service.replace_questions(kb_id, body)

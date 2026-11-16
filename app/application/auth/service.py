@@ -14,6 +14,7 @@ from uuid import uuid4
 from app.application.errors import InvalidCredentialsError
 from app.application.errors import LoginRateLimitError
 from app.application.errors import SelfLockoutError
+from app.application.errors import WrongPasswordError
 from app.application.errors import UserNotFoundError
 from app.application.errors import UnauthenticatedError
 from app.application.ports.auth import AuthRepository
@@ -174,6 +175,46 @@ class AuthService:
         if self._repository.user_by_id(user_id) is None:
             raise UserNotFoundError("账号不存在")
         self._repository.set_password(user_id, self._passwords.hash(password))
+
+    def change_own_password(
+        self, user_id: UUID, current_password: str, new_password: str, *,
+        client_id: str, current_token: str,
+    ) -> None:
+        """用户自己修改口令：先限流并验证当前口令，再撤销其他浏览器的会话，保留当前会话。
+
+        Args:
+            user_id: 当前登录用户。
+            current_password: 当前口令。
+            new_password: 新口令，15–128字符。
+            client_id: 服务器观察的来源。
+            current_token: 当前浏览器令牌，用于保留本会话。
+
+        Returns:
+            None。
+        """
+        _check_password(new_password)
+        now = self._clock()
+        self._repository.consume_login_attempts(
+            (token_digest(f"password:{user_id}"), token_digest(f"source:{client_id}")),
+            now, self._login_attempts, self._login_window_seconds,
+        )
+        account = self._repository.user_by_id(user_id)
+        if account is None or account.disabled:
+            raise UserNotFoundError("账号不存在")
+        if not 1 <= len(current_password) <= 128:
+            raise WrongPasswordError("当前口令不正确")
+        if not self._hash_slots.acquire(blocking=False):
+            raise LoginRateLimitError(1)
+        try:
+            verified = self._passwords.verify(current_password, account.password_hash)
+        finally:
+            self._hash_slots.release()
+        if not verified:
+            raise WrongPasswordError("当前口令不正确")
+        self._repository.set_password(
+            user_id, self._passwords.hash(new_password),
+            keep_token_hash=token_digest(current_token),
+        )
 
     def login(
         self, username: str, password: str, *, client_id: str,

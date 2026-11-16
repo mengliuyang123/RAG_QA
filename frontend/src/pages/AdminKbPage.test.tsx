@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import type { ExistingDocument, GapInput, KbDocument, KnowledgeGap, UploadOptions } from "../api/types";
@@ -18,10 +18,19 @@ const trackedGap: KnowledgeGap = {
   updatedAt: "2026-11-01T00:00:00Z",
 };
 
+let currentUser: { id: string; name: string; role: string; quota: null; editableKbIds: string[] | null } = {
+  id: "u", name: "管理员", role: "admin", quota: null, editableKbIds: null,
+};
+const reviewsSaved: unknown[] = [];
+
 vi.mock("../state/AppContext", () => ({
   useApp: () => ({
-    knowledgeBases: [{ id: "ops", name: "运维", description: "", icon: "books", documentsCount: 1 }],
+    knowledgeBases: [
+      { id: "ops", name: "运维", description: "", icon: "books", documentsCount: 1 },
+      { id: "hr", name: "人事", description: "", icon: "books", documentsCount: 0 },
+    ],
     refreshKnowledgeBases: async () => undefined,
+    user: currentUser,
   }),
 }));
 
@@ -35,6 +44,11 @@ vi.mock("../api", async () => {
         listDocuments: async () => documents,
         updateKnowledgeBase: async () => undefined,
         listGaps: async () => [trackedGap],
+        listDocumentReviews: async () => [],
+        saveDocumentReview: async (kbId: string, docId: string, review: { reviewDueOn: string | null; outdated: boolean; note: string | null }) => {
+          reviewsSaved.push({ kbId, docId, ...review });
+          return { kbId, docId, ...review };
+        },
         saveGap: async (gap: GapInput) => {
           savedGaps.push(gap);
           return { ...gap, updatedAt: "2026-11-17T00:00:00Z" };
@@ -83,6 +97,8 @@ afterEach(() => {
   batches.length = 0;
   failBatch = null;
   savedGaps.length = 0;
+  reviewsSaved.length = 0;
+  currentUser = { id: "u", name: "管理员", role: "admin", quota: null, editableKbIds: null };
   vi.restoreAllMocks();
 });
 
@@ -196,5 +212,36 @@ describe("AdminKbPage gap handoff", () => {
     choose(new File(["v1"], "copy.md"));
     await waitFor(() => expect(screen.getByText(/已存在/)).toBeTruthy());
     expect(savedGaps).toEqual([]);
+  });
+});
+
+describe("AdminKbPage roles and document reviews", () => {
+  it("shows a KB editor only the knowledge bases they manage, without admin-only controls", async () => {
+    currentUser = { id: "e", name: "编辑", role: "member", quota: null, editableKbIds: ["hr"] };
+    renderPage();
+    expect(screen.queryByRole("button", { name: /新建知识库/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /运维/ })).toBeNull();
+    expect(screen.getByRole("region", { name: "人事详情" })).toBeTruthy();
+    expect(screen.queryByRole("tab", { name: "访问权限" })).toBeNull();
+    expect(screen.getByRole("tab", { name: "标准答案" })).toBeTruthy();
+  });
+
+  it("lets an admin see the access tab", () => {
+    renderPage();
+    expect(screen.getByRole("tab", { name: "访问权限" })).toBeTruthy();
+  });
+
+  it("marks a document outdated from the table", async () => {
+    documents = [doc("a", "a.md")];
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "设置 a.md 的时效" }));
+    const editor = screen.getByRole("group", { name: "a.md 的时效" });
+    fireEvent.click(within(editor).getByRole("checkbox"));
+    fireEvent.click(within(editor).getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(screen.getByText("已将 a.md 标记为已过时，它不再参与检索")).toBeTruthy());
+    expect(reviewsSaved).toEqual([{ kbId: "ops", docId: "a", reviewDueOn: null, outdated: true, note: null }]);
+    expect(screen.getByText("已过时")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText(/只看已过时/));
+    expect(screen.getByLabelText("选择 a.md")).toBeTruthy();
   });
 });

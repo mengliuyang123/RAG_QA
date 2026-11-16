@@ -15,6 +15,8 @@ export interface User {
   name: string;
   role: Role;
   quota: QuestionQuota | null;
+  /** 可管理的知识库；null 表示全部（管理员）。 */
+  editableKbIds: string[] | null;
 }
 
 export interface KnowledgeBase {
@@ -320,6 +322,117 @@ export interface KnowledgeGap {
 
 export type GapInput = Omit<KnowledgeGap, "updatedAt">;
 
+// 分享一轮回答。
+export interface ShareLink {
+  url: string;
+  expiresAt: string;
+}
+
+export interface SharedTurn {
+  question: string;
+  answer: string;
+  citations: Citation[];
+  sharedBy: string;
+  createdAt: string;
+}
+
+// 点踩分类。
+export type FeedbackTriage = "retrieval_error" | "generation_error" | "missing_content" | "not_an_issue";
+export type FeedbackReason = "incorrect" | "incomplete" | "irrelevant" | "outdated" | "citation_wrong";
+
+export interface FeedbackItem {
+  id: string;
+  turnId: string;
+  question: string;
+  answer: string;
+  citations: Citation[];
+  reasons: FeedbackReason[];
+  comment: string | null;
+  revision: number;
+  triage: FeedbackTriage | null;
+  createdAt: string;
+}
+
+// 用量与费用（费用是按配置费率的估算，不是实际账单）。
+export type UsageGroup = "day" | "user" | "kb";
+
+export interface CostEstimate {
+  currency: string;
+  amount: number;
+}
+
+export interface UsageRow {
+  key: string;
+  label: string;
+  questions: number;
+  modelCalls: number;
+  inputTokens: number;
+  outputTokens: number;
+  costs: CostEstimate[];
+  costStatus: "estimated" | "partial" | "unknown";
+}
+
+export interface UsageReport {
+  days: number;
+  groupBy: UsageGroup;
+  totals: UsageRow;
+  rows: UsageRow[];
+  retentionLimited: boolean;
+}
+
+export interface TraceSummary {
+  id: string;
+  question: string | null;
+  createdAt: string;
+  outcome: Outcome | null;
+  lane: Lane | null;
+  latencyMs: number | null;
+  modelCalls: number;
+  inputTokens: number;
+  outputTokens: number;
+  costs: CostEstimate[];
+}
+
+// 知识库访问控制。
+export type KbMemberRole = "viewer" | "editor";
+
+export interface KbMember {
+  userId: string;
+  role: KbMemberRole;
+  username: string | null;
+  name: string | null;
+}
+
+export interface KbAccess {
+  kbId: string;
+  restricted: boolean;
+  members: KbMember[];
+}
+
+// 文档时效。
+export interface DocumentReview {
+  docId: string;
+  kbId: string;
+  reviewDueOn: string | null;
+  outdated: boolean;
+  note: string | null;
+}
+
+// 标准答案：发布为知识库中的「常见问题」文档。
+export interface FaqEntry {
+  id: string;
+  kbId: string;
+  question: string;
+  answer: string;
+  updatedAt: string;
+}
+
+export interface FaqState {
+  entries: FaqEntry[];
+  filename: string;
+  publication: { status: "queued" | "unchanged" | "removed" | "none" | "busy"; jobId: string | null } | null;
+}
+
 export type Feature =
   | "auth"
   | "knowledgeBases"
@@ -337,6 +450,10 @@ export interface Api {
   me(): Promise<User>;
   login(username: string, password: string): Promise<User>;
   logout(): Promise<void>;
+  /** 修改自己的口令；其他浏览器的登录会被撤销，当前浏览器保持登录。 */
+  changePassword(currentPassword: string, newPassword: string): Promise<void>;
+  createShare(turnId: string): Promise<ShareLink>;
+  getShare(token: string): Promise<SharedTurn>;
   listKnowledgeBases(): Promise<KnowledgeBase[]>;
   listKbDocuments(kbId: string): Promise<KbDocument[]>;
   suggestedQuestions(): Promise<SuggestedQuestion[]>;
@@ -382,5 +499,24 @@ export interface Api {
     saveGap(gap: GapInput): Promise<KnowledgeGap>;
     /** 通过问答接口复测一个问题，限定到 kbId（null 表示自动路由）。 */
     checkQuestion(question: string, kbId: string | null): Promise<GapCheckResult>;
+    getSuggestedQuestions(kbId: string): Promise<string[]>;
+    setSuggestedQuestions(kbId: string, questions: string[]): Promise<string[]>;
+    listFeedback(): Promise<FeedbackItem[]>;
+    triageFeedback(id: string, triage: FeedbackTriage | null, revision: number): Promise<FeedbackItem>;
+    usage(days: number, groupBy: UsageGroup): Promise<UsageReport>;
+    recentTraces(limit: number): Promise<TraceSummary[]>;
+    getKbAccess(kbId: string): Promise<KbAccess>;
+    saveKbAccess(kbId: string, access: { restricted: boolean; members: { userId: string; role: KbMemberRole }[] }): Promise<KbAccess>;
+    listDocumentReviews(kbId: string): Promise<DocumentReview[]>;
+    saveDocumentReview(
+      kbId: string,
+      docId: string,
+      review: { reviewDueOn: string | null; outdated: boolean; note: string | null },
+    ): Promise<DocumentReview>;
+    listFaq(kbId: string): Promise<FaqState>;
+    createFaq(kbId: string, entry: { question: string; answer: string }): Promise<FaqState>;
+    updateFaq(kbId: string, id: string, entry: { question: string; answer: string }): Promise<FaqState>;
+    deleteFaq(kbId: string, id: string): Promise<FaqState>;
+    publishFaq(kbId: string): Promise<FaqState>;
   };
 }
