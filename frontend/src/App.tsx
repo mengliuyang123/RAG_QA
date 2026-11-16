@@ -1,9 +1,11 @@
 import type { ReactNode } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { Layout } from "./components/Layout";
+import { AdminGapsPage } from "./pages/AdminGapsPage";
 import { AdminInsightsPage } from "./pages/AdminInsightsPage";
 import { AdminKbPage } from "./pages/AdminKbPage";
 import { AdminSettingsPage } from "./pages/AdminSettingsPage";
+import { AdminUsersPage } from "./pages/AdminUsersPage";
 import { ChatPage } from "./pages/ChatPage";
 import { KnowledgePage } from "./pages/KnowledgePage";
 import { LoginPage } from "./pages/LoginPage";
@@ -28,6 +30,8 @@ export function App() {
         <Route path="kb" element={<KnowledgePage />} />
         <Route path="admin/kb" element={<AdminOnly><AdminKbPage /></AdminOnly>} />
         <Route path="admin/insights" element={<AdminOnly><AdminInsightsPage /></AdminOnly>} />
+        <Route path="admin/gaps" element={<AdminOnly><AdminGapsPage /></AdminOnly>} />
+        <Route path="admin/users" element={<AdminOnly><AdminUsersPage /></AdminOnly>} />
         <Route path="admin/settings" element={<AdminOnly><AdminSettingsPage /></AdminOnly>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

@@ -26,6 +26,18 @@ class UserAlreadyExistsError(ValueError):
     """表示管理员创建了重复登录标识。"""
 
 
+class UserNotFoundError(LookupError):
+    """表示管理员操作的账号不存在。"""
+
+
+class LastAdminError(ValueError):
+    """表示操作会让系统不再有任何启用的管理员。"""
+
+
+class SelfLockoutError(ValueError):
+    """表示管理员试图降级或禁用自己的账号。"""
+
+
 class LoginRateLimitError(RuntimeError):
     """表示登录尝试或口令验证并发超过限制。"""
 

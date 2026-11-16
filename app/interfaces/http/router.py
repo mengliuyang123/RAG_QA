@@ -19,6 +19,8 @@ from app.interfaces.http.routes.suggestions import router as suggestions_admin_r
 from app.interfaces.http.routes.ingestion_jobs import router as ingestion_jobs_router
 from app.interfaces.http.routes.insights import router as insights_router
 from app.interfaces.http.routes.settings_admin import router as settings_admin_router
+from app.interfaces.http.routes.users_admin import router as users_admin_router
+from app.interfaces.http.routes.knowledge_gaps import router as knowledge_gaps_router
 
 from app.interfaces.http.routes.documents import router as documents_router
 from app.interfaces.http.routes.document_chunks import router as document_chunks_router
@@ -51,3 +53,5 @@ router.include_router(suggestions_admin_router, dependencies=[Depends(require_ad
 router.include_router(ingestion_jobs_router, dependencies=[Depends(require_admin)])
 router.include_router(insights_router, dependencies=[Depends(require_admin)])
 router.include_router(settings_admin_router, dependencies=[Depends(require_admin)])
+router.include_router(users_admin_router, dependencies=[Depends(require_admin)])
+router.include_router(knowledge_gaps_router, dependencies=[Depends(require_admin)])

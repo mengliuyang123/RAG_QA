@@ -1,10 +1,12 @@
 import { normalizeDocument, normalizeToolCall, normalizeTurn } from "./adapters";
 import {
   MOCK_DOCUMENTS,
+  MOCK_GAP_CANDIDATES,
   MOCK_INSIGHTS,
   MOCK_KNOWLEDGE_BASES,
   MOCK_REFUSALS,
   MOCK_SUGGESTED_QUESTIONS,
+  MOCK_USERS,
   type MockDocument,
 } from "./mockData";
 import type {
@@ -18,6 +20,8 @@ import type {
   KbDocument,
   KbScope,
   KnowledgeBase,
+  KnowledgeGap,
+  ManagedUser,
   ModelSettings,
   StreamHandlers,
   Turn,
@@ -372,6 +376,8 @@ export function createMockApi(): Api {
   const documents = [...MOCK_DOCUMENTS];
   const knowledgeBases = MOCK_KNOWLEDGE_BASES.map((kb) => ({ ...kb }));
   const busy = new Set<string>();
+  const users: ManagedUser[] = MOCK_USERS.map((item) => ({ ...item }));
+  const gaps = new Map<string, KnowledgeGap>();
   const user: User = {
     id: "u_demo",
     name: "小刘",
@@ -670,6 +676,86 @@ export function createMockApi(): Api {
       async refusals() {
         await sleep(120);
         return MOCK_REFUSALS;
+      },
+
+      async listUsers() {
+        await sleep(100);
+        return users.map((item) => ({ ...item }));
+      },
+
+      async createUser(input) {
+        await sleep(150);
+        const username = input.username.trim().toLowerCase();
+        if (!/^[a-z0-9][a-z0-9_.-]{2,63}$/.test(username)) {
+          throw new ApiError(422, "登录名需 3–64 位，只能包含小写字母、数字、点、下划线和连字符", "validation_error");
+        }
+        if (input.password.length < 15 || input.password.length > 128) {
+          throw new ApiError(422, "口令长度必须为15–128字符", "validation_error");
+        }
+        if (users.some((item) => item.username === username)) {
+          throw new ApiError(409, "登录名已被使用", "user_exists");
+        }
+        const created: ManagedUser = {
+          id: uuid(), username, name: input.name.trim(), role: input.role, disabled: false,
+          createdAt: new Date().toISOString(),
+        };
+        users.push(created);
+        return { ...created };
+      },
+
+      async updateUser(userId, changes) {
+        await sleep(120);
+        const target = users.find((item) => item.id === userId);
+        if (!target) throw new ApiError(404, "账号不存在", "user_not_found");
+        if (userId === user.id && (changes.role === "member" || changes.disabled === true)) {
+          throw new ApiError(409, "不能降级或禁用自己的账号", "self_lockout");
+        }
+        const role = changes.role ?? target.role;
+        const disabled = changes.disabled ?? target.disabled;
+        const wasAdmin = target.role === "admin" && !target.disabled;
+        const otherAdmins = users.filter((item) => item.id !== userId && item.role === "admin" && !item.disabled);
+        if (wasAdmin && !(role === "admin" && !disabled) && otherAdmins.length === 0) {
+          throw new ApiError(409, "至少需要保留一名启用的管理员", "last_admin");
+        }
+        Object.assign(target, { role, disabled });
+        return { ...target };
+      },
+
+      async resetPassword(userId, password) {
+        await sleep(120);
+        if (!users.some((item) => item.id === userId)) throw new ApiError(404, "账号不存在", "user_not_found");
+        if (password.length < 15 || password.length > 128) {
+          throw new ApiError(422, "口令长度必须为15–128字符", "validation_error");
+        }
+      },
+
+      async gapCandidates() {
+        await sleep(150);
+        return { candidates: structuredClone(MOCK_GAP_CANDIDATES), warnings: [] };
+      },
+
+      async listGaps() {
+        await sleep(80);
+        return [...gaps.values()]
+          .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
+          .map((gap) => structuredClone(gap));
+      },
+
+      async saveGap(input) {
+        await sleep(100);
+        if (input.status === "verified" && !(input.lastCheck && input.lastCheck.results.every((item) => item.answered))) {
+          throw new ApiError(422, "只有全部样例问题复测通过后才能标记为已验证", "gap_not_verified");
+        }
+        const saved: KnowledgeGap = { ...structuredClone(input), updatedAt: new Date().toISOString() };
+        gaps.set(input.key, saved);
+        return structuredClone(saved);
+      },
+
+      async checkQuestion(question, kbId) {
+        await sleep(300);
+        // 演示规则：本次会话里向该知识库上传过文档后，复测视为能回答。
+        const answered = documents.some((doc) => doc.content !== undefined && (!kbId || doc.kbId === kbId));
+        return { question, outcome: answered ? "answered" : "refused", answered };
       },
 
       async getModelSettings() {

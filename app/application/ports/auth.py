@@ -3,10 +3,12 @@
 
 from datetime import datetime
 from typing import Protocol
+from uuid import UUID
 
 from app.domain.auth import AuthenticatedSession
 from app.domain.auth import StoredSession
 from app.domain.auth import UserAccount
+from app.domain.auth import UserRole
 
 
 class PasswordHasher(Protocol):
@@ -55,6 +57,50 @@ class AuthRepository(Protocol):
 
         Returns:
             账号或None。
+        """
+
+    def list_users(self) -> list[UserAccount]:
+        """按创建时间列出全部账号。
+
+        Returns:
+            账号列表。
+        """
+
+    def user_by_id(self, user_id: UUID) -> UserAccount | None:
+        """按标识读取账号。
+
+        Args:
+            user_id: 用户标识。
+
+        Returns:
+            账号或None。
+        """
+
+    def update_user(
+        self, user_id: UUID, *, role: UserRole | None, disabled: bool | None,
+    ) -> UserAccount:
+        """在同一事务中修改角色或禁用状态，并保证至少保留一名启用的管理员。
+
+        禁用账号时同一事务删除其全部服务端会话。
+
+        Args:
+            user_id: 目标账号。
+            role: 新角色，None表示不变。
+            disabled: 新禁用状态，None表示不变。
+
+        Returns:
+            修改后的账号；不存在抛UserNotFoundError，最后管理员抛LastAdminError。
+        """
+
+    def set_password(self, user_id: UUID, password_hash: str) -> None:
+        """替换口令哈希，并在同一事务撤销该账号全部会话。
+
+        Args:
+            user_id: 目标账号。
+            password_hash: 新的带盐编码。
+
+        Returns:
+            None；不存在抛UserNotFoundError。
         """
 
     def save_session(self, session: StoredSession) -> None:

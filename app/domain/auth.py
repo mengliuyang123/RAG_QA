@@ -57,6 +57,39 @@ class UserAccount(User):
         """
         return User(id=self.id, name=self.name, role=self.role, avatar_url=self.avatar_url)
 
+    def managed(self) -> "ManagedUser":
+        """返回管理员列表可见的账号字段，不包含任何口令信息。
+
+        Returns:
+            管理视图。
+        """
+        return ManagedUser(
+            id=self.id, username=self.username, name=self.name, role=self.role,
+            disabled=self.disabled, created_at=self.created_at,
+        )
+
+
+class ManagedUser(BaseModel):
+    """管理员用户列表的公开投影，没有口令哈希字段可被意外序列化。
+
+    Attributes:
+        id: 用户标识。
+        username: 规范化登录标识。
+        name: 展示名。
+        role: 当前角色。
+        disabled: 是否被禁用。
+        created_at: UTC创建时间。
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: UUID
+    username: str
+    name: str
+    role: UserRole
+    disabled: bool
+    created_at: AwareDatetime
+
 
 class StoredSession(BaseModel):
     """服务器只保存令牌摘要和时限，不保存可直接使用的cookie。

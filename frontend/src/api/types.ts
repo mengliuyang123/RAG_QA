@@ -254,6 +254,72 @@ export interface ModelSettings {
   storedEmbeddingDimensions: number | null;
 }
 
+// 管理员账号管理。后端从不返回口令或哈希。
+export interface ManagedUser {
+  id: string;
+  username: string;
+  name: string;
+  role: Role;
+  disabled: boolean;
+  createdAt: string;
+}
+
+export interface NewUser {
+  username: string;
+  name: string;
+  password: string;
+  role: Role;
+}
+
+// 知识缺口工作台：缺口来自拒答聚类与点踩反馈，后端只保存处理状态。
+export type GapStatus = "open" | "document_added" | "verified";
+export type GapSource = "refusal_cluster" | "feedback";
+
+export interface GapCheckResult {
+  question: string;
+  outcome: Outcome | "error";
+  answered: boolean;
+}
+
+export interface GapCheck {
+  checkedAt: string;
+  kbId: string | null;
+  results: GapCheckResult[];
+}
+
+/** 从洞察接口得到、尚未必然被跟踪的缺口候选。 */
+export interface GapCandidate {
+  key: string;
+  source: GapSource;
+  title: string;
+  questions: string[];
+  kbId: string | null;
+  /** 聚类内拒答次数；点踩为 1。 */
+  count: number;
+  lastAskedAt: string | null;
+}
+
+export interface GapCandidates {
+  candidates: GapCandidate[];
+  /** 某个来源加载失败时的提示，其余来源照常显示。 */
+  warnings: string[];
+}
+
+/** 已保存处理状态的缺口。 */
+export interface KnowledgeGap {
+  key: string;
+  source: GapSource;
+  title: string;
+  questions: string[];
+  kbId: string | null;
+  status: GapStatus;
+  docId: string | null;
+  lastCheck: GapCheck | null;
+  updatedAt: string | null;
+}
+
+export type GapInput = Omit<KnowledgeGap, "updatedAt">;
+
 export type Feature =
   | "auth"
   | "knowledgeBases"
@@ -305,5 +371,16 @@ export interface Api {
     getModelSettings(): Promise<ModelSettings>;
     /** 只提交改动的字段；null 表示清空（恢复默认）。保存成功后立即生效。 */
     updateModelSettings(values: Record<string, string | number | null>): Promise<ModelSettings>;
+    listUsers(): Promise<ManagedUser[]>;
+    createUser(user: NewUser): Promise<ManagedUser>;
+    updateUser(userId: string, changes: { role?: Role; disabled?: boolean }): Promise<ManagedUser>;
+    /** 重置后该账号所有已登录的浏览器都需重新登录。 */
+    resetPassword(userId: string, password: string): Promise<void>;
+    gapCandidates(): Promise<GapCandidates>;
+    listGaps(): Promise<KnowledgeGap[]>;
+    /** 整体保存一个缺口的状态；verified 必须附带全部通过的复测。 */
+    saveGap(gap: GapInput): Promise<KnowledgeGap>;
+    /** 通过问答接口复测一个问题，限定到 kbId（null 表示自动路由）。 */
+    checkQuestion(question: string, kbId: string | null): Promise<GapCheckResult>;
   };
 }

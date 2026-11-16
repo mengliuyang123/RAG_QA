@@ -83,7 +83,7 @@ async def test_upload_rejects_unsupported_extension(
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/api/upload",
-            files={"file": ("notes.docx", b"hello", "application/octet-stream")},
+            files={"file": ("notes.doc", b"hello", "application/octet-stream")},
         )
 
     assert response.status_code == 415

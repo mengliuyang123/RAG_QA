@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 async def upload_document(
     file: Annotated[
         UploadFile,
-        File(description="PDF、Markdown 或 TXT 文档"),
+        File(description="PDF、Word（.docx）、PowerPoint（.pptx）、Markdown 或 TXT 文档"),
     ],
     service: Annotated[
         UploadService,

@@ -4,6 +4,10 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
+/* 旧样式的输入框类名 .text-input 与 Tailwind 的 text-{color} 工具类同名，
+   会生成 color: var(--input)（接近白色）覆盖输入文字颜色，这里禁止生成该工具类。 */
+@source not inline("text-input");
+
 /* shadcn/ui neutral 主题令牌（assistant-ui 官方组件基于这套变量）。暗色跟随系统。 */
 :root {
   --radius: 0.625rem;

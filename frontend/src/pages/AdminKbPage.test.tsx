@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ExistingDocument, KbDocument, UploadOptions } from "../api/types";
+import { MemoryRouter } from "react-router-dom";
+import type { ExistingDocument, GapInput, KbDocument, KnowledgeGap, UploadOptions } from "../api/types";
 
 const existing: ExistingDocument = {
   docId: "old", kbId: "ops", filename: "guide.md", status: "ready", uploadedAt: "2026-11-01T00:00:00Z",
@@ -10,6 +11,12 @@ let documents: KbDocument[] = [];
 let conflictOnFirst = true;
 const batches: string[][] = [];
 let failBatch: Error | null = null;
+const savedGaps: GapInput[] = [];
+const trackedGap: KnowledgeGap = {
+  key: "cluster:cl_redis", source: "refusal_cluster", title: "Redis 缓存怎么配置",
+  questions: ["Redis 缓存怎么配置"], kbId: "ops", status: "open", docId: null, lastCheck: null,
+  updatedAt: "2026-11-01T00:00:00Z",
+};
 
 vi.mock("../state/AppContext", () => ({
   useApp: () => ({
@@ -27,6 +34,11 @@ vi.mock("../api", async () => {
         insights: async () => [],
         listDocuments: async () => documents,
         updateKnowledgeBase: async () => undefined,
+        listGaps: async () => [trackedGap],
+        saveGap: async (gap: GapInput) => {
+          savedGaps.push(gap);
+          return { ...gap, updatedAt: "2026-11-17T00:00:00Z" };
+        },
         deleteDocument: async () => undefined,
         deleteDocuments: async (ids: string[]) => {
           batches.push(ids);
@@ -55,8 +67,12 @@ vi.mock("../api", async () => {
 const { AdminKbPage } = await import("./AdminKbPage");
 const { TooltipProvider } = await import("../components/ui/tooltip");
 
-function renderPage() {
-  render(<TooltipProvider><AdminKbPage /></TooltipProvider>);
+function renderPage(path = "/admin/kb") {
+  render(
+    <MemoryRouter initialEntries={[path]}>
+      <TooltipProvider><AdminKbPage /></TooltipProvider>
+    </MemoryRouter>,
+  );
 }
 
 afterEach(() => {
@@ -66,6 +82,7 @@ afterEach(() => {
   conflictOnFirst = true;
   batches.length = 0;
   failBatch = null;
+  savedGaps.length = 0;
   vi.restoreAllMocks();
 });
 
@@ -126,7 +143,8 @@ describe("AdminKbPage batch delete", () => {
     expect(batches).toEqual([["a", "c"]]);
     expect(screen.queryByLabelText("选择 a.md")).toBeNull();
     expect(screen.getByLabelText("选择 b.md")).toBeTruthy();
-    expect(screen.queryByText(/已选/)).toBeNull();
+    // 勾选在文档列表刷新后的 effect 中清理。
+    await waitFor(() => expect(screen.queryByText(/已选/)).toBeNull());
   });
 
   it("selects all, reports documents that were already gone, and splits batches at 100", async () => {
@@ -154,5 +172,29 @@ describe("AdminKbPage batch delete", () => {
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("仍在入库"));
     expect(screen.getByText("已选 1 篇")).toBeTruthy();
     expect(screen.getByLabelText("选择 a.md")).toBeTruthy();
+  });
+});
+
+describe("AdminKbPage gap handoff", () => {
+  it("marks the knowledge gap as document added after uploading from the workbench", async () => {
+    conflictOnFirst = false;
+    renderPage("/admin/kb?kb=ops&gap=cluster%3Acl_redis");
+    expect(screen.getByRole("note").textContent).toContain("正在为知识缺口补充文档");
+    expect(screen.getByRole("link", { name: "返回缺口工作台" }).getAttribute("href")).toBe("/admin/gaps");
+    choose(new File(["v1"], "redis.md"));
+    await waitFor(() => expect(screen.getByText(/知识缺口已标记为已补充文档/)).toBeTruthy());
+    expect(savedGaps).toEqual([{
+      key: "cluster:cl_redis", source: "refusal_cluster", title: "Redis 缓存怎么配置",
+      questions: ["Redis 缓存怎么配置"], kbId: "ops", status: "document_added", docId: "old", lastCheck: null,
+    }]);
+  });
+
+  it("does not touch gaps for a normal upload", async () => {
+    conflictOnFirst = false;
+    renderPage();
+    expect(screen.queryByRole("note")).toBeNull();
+    choose(new File(["v1"], "copy.md"));
+    await waitFor(() => expect(screen.getByText(/已存在/)).toBeTruthy());
+    expect(savedGaps).toEqual([]);
   });
 });
