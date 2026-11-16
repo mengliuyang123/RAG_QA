@@ -43,6 +43,8 @@ function above(value: number | null, threshold: number): boolean {
 }
 
 const KB_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
+// 与后端 POST /api/documents/batch-delete 的单次上限一致。
+const BATCH_DELETE_LIMIT = 100;
 
 interface PendingConflict {
   filename: string;
@@ -133,6 +135,8 @@ export function AdminKbPage() {
   const fileInput = useRef<HTMLInputElement>(null);
   const [creating, setCreating] = useState(false);
   const [conflict, setConflict] = useState<PendingConflict | null>(null);
+  const [checked, setChecked] = useState<Set<string>>(() => new Set());
+  const [deleting, setDeleting] = useState(false);
 
   const askConflict = (filename: string, existing: ExistingDocument) =>
     new Promise<UploadConflictChoice | null>((resolve) => {
@@ -163,8 +167,56 @@ export function AdminKbPage() {
 
   useEffect(() => {
     setDocuments(null);
+    setChecked(new Set());
     loadDocuments().catch((error: Error) => setMessage({ kind: "error", text: error.message }));
   }, [loadDocuments]);
+
+  // 列表刷新后只保留仍存在的勾选，避免对已消失的文档发起删除。
+  useEffect(() => {
+    if (!documents) return;
+    const present = new Set(documents.map((doc) => doc.docId));
+    setChecked((current) => {
+      const kept = [...current].filter((id) => present.has(id));
+      return kept.length === current.size ? current : new Set(kept);
+    });
+  }, [documents]);
+
+  const toggle = (docId: string) =>
+    setChecked((current) => {
+      const next = new Set(current);
+      if (next.has(docId)) next.delete(docId);
+      else next.add(docId);
+      return next;
+    });
+
+  const allChecked = !!documents && documents.length > 0 && documents.every((doc) => checked.has(doc.docId));
+  const toggleAll = () => setChecked(allChecked || !documents ? new Set() : new Set(documents.map((doc) => doc.docId)));
+
+  const removeChecked = async () => {
+    const ids = [...checked];
+    if (ids.length === 0) return;
+    if (!window.confirm(`删除选中的 ${ids.length} 篇文档？删除后它们将不再出现在任何回答中。`)) return;
+    setDeleting(true);
+    let deleted = 0;
+    let notFound = 0;
+    try {
+      for (let start = 0; start < ids.length; start += BATCH_DELETE_LIMIT) {
+        const result = await api.admin.deleteDocuments(ids.slice(start, start + BATCH_DELETE_LIMIT));
+        deleted += result.deleted.length;
+        notFound += result.notFound.length;
+      }
+      setMessage({
+        kind: "ok",
+        text: notFound > 0 ? `已删除 ${deleted} 篇文档，${notFound} 篇已不存在` : `已删除 ${deleted} 篇文档`,
+      });
+    } catch (error) {
+      const text = (error as Error).message;
+      setMessage({ kind: "error", text: deleted > 0 ? `已删除 ${deleted} 篇，其余删除失败：${text}` : text });
+    } finally {
+      setDeleting(false);
+      await Promise.all([loadDocuments(), refreshKnowledgeBases()]).catch(() => undefined);
+    }
+  };
 
   const upload = async (files: FileList | null) => {
     if (!files || !kbId) return;
@@ -351,14 +403,36 @@ export function AdminKbPage() {
                 </div>
               )}
 
+              {checked.size > 0 && (
+                <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
+                  <span className="muted" style={{ fontSize: 12 }}>已选 {checked.size} 篇</span>
+                  <button type="button" className="btn" disabled={deleting} onClick={removeChecked}>
+                    <Icon name="trash" /> {deleting ? "正在删除…" : "删除所选"}
+                  </button>
+                  <button type="button" className="btn" disabled={deleting} onClick={() => setChecked(new Set())}>取消选择</button>
+                </div>
+              )}
+
               <div className="table-wrap">
                 <table className="table">
                   <thead>
-                    <tr><th>文件</th><th className="num">文本块</th><th>状态</th><th>更新时间</th><th aria-label="操作" /></tr>
+                    <tr>
+                      <th style={{ width: 32 }}>
+                        <input
+                          type="checkbox"
+                          aria-label="全选文档"
+                          checked={allChecked}
+                          disabled={!documents || documents.length === 0 || deleting}
+                          onChange={toggleAll}
+                        />
+                      </th>
+                      <th>文件</th><th className="num">文本块</th><th>状态</th><th>更新时间</th><th aria-label="操作" />
+                    </tr>
                   </thead>
                   <tbody>
                     {uploads.map((row) => (
                       <tr key={row.key}>
+                        <td />
                         <td style={{ wordBreak: "break-all" }}>{row.filename}</td>
                         <td className="num">—</td>
                         <td>
@@ -386,6 +460,15 @@ export function AdminKbPage() {
                     ))}
                     {documents?.map((doc) => (
                       <tr key={doc.docId}>
+                        <td>
+                          <input
+                            type="checkbox"
+                            aria-label={`选择 ${doc.filename}`}
+                            checked={checked.has(doc.docId)}
+                            disabled={deleting}
+                            onChange={() => toggle(doc.docId)}
+                          />
+                        </td>
                         <td style={{ wordBreak: "break-all" }}>{doc.filename}</td>
                         <td className="num">{doc.chunksCount}</td>
                         <td>
