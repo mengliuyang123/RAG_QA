@@ -11,12 +11,14 @@ import {
   CopyIcon,
   Loader2Icon,
   RefreshCwIcon,
+  Share2Icon,
   SquareIcon,
   ThumbsDownIcon,
   ThumbsUpIcon,
   TriangleAlertIcon,
 } from "lucide-react";
-import { createContext, useContext } from "react";
+import { createContext, useContext, useState } from "react";
+import { api } from "../../api";
 import type { Citation, FeedbackRating, Turn } from "../../api/types";
 import { visibleStatuses } from "../../lib/generative";
 import { phaseLabel } from "../../lib/phases";
@@ -101,6 +103,30 @@ function FeedbackButtons({ turn }: { turn: Turn }) {
   );
 }
 
+// 生成 30 天有效的分享链接并复制；打开链接的人需要登录。
+function ShareButton({ turn }: { turn: Turn }) {
+  const [state, setState] = useState<"idle" | "copied" | "error">("idle");
+  const share = async () => {
+    try {
+      const link = await api.createShare(turn.id);
+      await navigator.clipboard?.writeText(new URL(link.url, window.location.origin).toString());
+      setState("copied");
+    } catch {
+      setState("error");
+    }
+    setTimeout(() => setState("idle"), 2000);
+  };
+  return (
+    <TooltipIconButton
+      tooltip={state === "copied" ? "已复制分享链接" : state === "error" ? "分享失败" : "分享"}
+      aria-label={state === "copied" ? "已复制分享链接" : "分享回答"}
+      onClick={() => void share()}
+    >
+      {state === "copied" ? <CheckIcon /> : <Share2Icon />}
+    </TooltipIconButton>
+  );
+}
+
 function AnswerMessage({ turn }: { turn: Turn }) {
   const { activeCitation, setActiveCitation, send } = useRagThread();
   const grounding = GROUNDING[turn.grounding];
@@ -155,6 +181,7 @@ function AnswerMessage({ turn }: { turn: Turn }) {
             </ActionBarPrimitive.Copy>
           )}
           <FeedbackButtons turn={turn} />
+          <ShareButton turn={turn} />
         </ActionBarPrimitive.Root>
       </div>
     </>

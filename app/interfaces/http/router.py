@@ -21,6 +21,7 @@ from app.interfaces.http.routes.insights import router as insights_router
 from app.interfaces.http.routes.settings_admin import router as settings_admin_router
 from app.interfaces.http.routes.users_admin import router as users_admin_router
 from app.interfaces.http.routes.knowledge_gaps import router as knowledge_gaps_router
+from app.interfaces.http.routes.knowledge_management import router as knowledge_management_router
 
 from app.interfaces.http.routes.documents import router as documents_router
 from app.interfaces.http.routes.document_chunks import router as document_chunks_router
@@ -37,7 +38,8 @@ router.include_router(health_router)
 router.include_router(auth_router)
 router.include_router(queries_router, dependencies=[Depends(require_admin)])
 router.include_router(uploads_router, dependencies=[Depends(require_admin)])
-router.include_router(documents_router, dependencies=[Depends(require_admin)])
+# 路由内按知识库检查 editor／管理员权限。
+router.include_router(documents_router, dependencies=[Depends(require_user)])
 router.include_router(document_chunks_router, dependencies=[Depends(require_admin)])
 router.include_router(conversations_router, dependencies=[Depends(require_user)])
 router.include_router(feedback_router, dependencies=[Depends(require_user)])
@@ -48,10 +50,14 @@ router.include_router(usage_router, dependencies=[Depends(require_admin)])
 router.include_router(feedback_admin_router, dependencies=[Depends(require_admin)])
 router.include_router(knowledge_read_router, dependencies=[Depends(require_user)])
 router.include_router(knowledge_browse_router, dependencies=[Depends(require_user)])
-router.include_router(knowledge_admin_router, dependencies=[Depends(require_admin)])
-router.include_router(suggestions_admin_router, dependencies=[Depends(require_admin)])
-router.include_router(ingestion_jobs_router, dependencies=[Depends(require_admin)])
+# 路由内按知识库检查 editor／管理员权限。
+router.include_router(knowledge_admin_router, dependencies=[Depends(require_user)])
+# 路由内按知识库检查 editor／管理员权限。
+router.include_router(suggestions_admin_router, dependencies=[Depends(require_user)])
+# 路由内按知识库检查 editor／管理员权限。
+router.include_router(ingestion_jobs_router, dependencies=[Depends(require_user)])
 router.include_router(insights_router, dependencies=[Depends(require_admin)])
 router.include_router(settings_admin_router, dependencies=[Depends(require_admin)])
 router.include_router(users_admin_router, dependencies=[Depends(require_admin)])
 router.include_router(knowledge_gaps_router, dependencies=[Depends(require_admin)])
+router.include_router(knowledge_management_router, dependencies=[Depends(require_user)])

@@ -3,6 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { UploadConflictError } from "../api/mock";
 import type {
+  DocumentReview,
   ExistingDocument,
   KbDocument,
   KbInsight,
@@ -11,6 +12,10 @@ import type {
   UploadResult,
 } from "../api/types";
 import { Icon } from "../components/Icon";
+import { KbAccessPanel } from "../components/kb/KbAccessPanel";
+import { KbFaqPanel } from "../components/kb/KbFaqPanel";
+import { KbSuggestionsPanel } from "../components/kb/KbSuggestionsPanel";
+import { ReviewChip, ReviewEditor, needsAttention } from "../components/kb/ReviewCell";
 import { Topbar } from "../components/Layout";
 import { useApp } from "../state/AppContext";
 import { formatDate } from "./KnowledgePage";
@@ -134,8 +139,19 @@ async function markGapDocumentAdded(gapKey: string, kbId: string, docId: string)
   return true;
 }
 
+type Panel = "docs" | "suggestions" | "faq" | "access";
+
 export function AdminKbPage() {
-  const { knowledgeBases, refreshKnowledgeBases } = useApp();
+  const { knowledgeBases: allKnowledgeBases, refreshKnowledgeBases, user } = useApp();
+  const isAdmin = user?.role === "admin";
+  // 库 editor 只看到自己负责的库；管理员看到全部。
+  const knowledgeBases = isAdmin
+    ? allKnowledgeBases
+    : allKnowledgeBases.filter((kb) => user?.editableKbIds?.includes(kb.id));
+  const [panel, setPanel] = useState<Panel>("docs");
+  const [reviews, setReviews] = useState<Map<string, DocumentReview>>(() => new Map());
+  const [reviewing, setReviewing] = useState<string | null>(null);
+  const [onlyAttention, setOnlyAttention] = useState(false);
   const [searchParams] = useSearchParams();
   const gapKey = searchParams.get("gap");
   const [selected, setSelected] = useState<string | null>(() => searchParams.get("kb"));
@@ -167,8 +183,18 @@ export function AdminKbPage() {
 
   // 知识库增删后重新统计，新建的知识库也能显示指标行。
   useEffect(() => {
+    if (!isAdmin) return;
     api.admin.insights().then(setInsights).catch(() => setInsights([]));
-  }, [knowledgeBases.length]);
+  }, [knowledgeBases.length, isAdmin]);
+
+  useEffect(() => {
+    setReviews(new Map());
+    setReviewing(null);
+    if (!kbId) return;
+    api.admin.listDocumentReviews(kbId)
+      .then((list) => setReviews(new Map(list.map((review) => [review.docId, review]))))
+      .catch(() => setReviews(new Map()));
+  }, [kbId]);
 
   useEffect(() => { setDescription(kb?.description ?? ""); }, [kb?.id, kb?.description]);
 
@@ -312,7 +338,7 @@ export function AdminKbPage() {
   return (
     <>
       <Topbar title="知识库管理">
-        {!creating && (
+        {isAdmin && !creating && (
           <button type="button" className="btn" onClick={() => setCreating(true)}>
             <Icon name="plus" /> 新建知识库
           </button>
@@ -337,7 +363,8 @@ export function AdminKbPage() {
               <Link to="/admin/gaps">返回缺口工作台</Link>
             </div>
           )}
-          {!api.supports.insights && (
+          {knowledgeBases.length === 0 && <div className="empty">没有你可以管理的知识库</div>}
+          {isAdmin && !api.supports.insights && (
             <div className="banner" style={{ marginBottom: 12 }}>
               后端尚未提供统计接口，提问量、拒答率等指标为示例数据。
             </div>
@@ -420,7 +447,21 @@ export function AdminKbPage() {
                 </div>
               )}
 
-              {message && (
+              <div className="tabs" role="tablist" aria-label="知识库内容">
+                {([
+                  ["docs", "文档"], ["suggestions", "推荐问题"], ["faq", "标准答案"],
+                  ...(isAdmin ? [["access", "访问权限"]] : []),
+                ] as [Panel, string][]).map(([value, label]) => (
+                  <button key={value} type="button" role="tab" aria-selected={panel === value} className={panel === value ? "btn btn-primary" : "btn"} onClick={() => setPanel(value)}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+              {panel === "suggestions" && <KbSuggestionsPanel kbId={kb.id} />}
+              {panel === "faq" && <KbFaqPanel kbId={kb.id} />}
+              {panel === "access" && isAdmin && <KbAccessPanel kbId={kb.id} />}
+
+              {panel === "docs" && message && (
                 <div
                   role={message.kind === "error" ? "alert" : "status"}
                   className={message.kind === "error" ? "banner" : "chip chip-success"}
@@ -430,7 +471,7 @@ export function AdminKbPage() {
                 </div>
               )}
 
-              {checked.size > 0 && (
+              {panel === "docs" && checked.size > 0 && (
                 <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
                   <span className="muted" style={{ fontSize: 12 }}>已选 {checked.size} 篇</span>
                   <button type="button" className="btn" disabled={deleting} onClick={removeChecked}>
@@ -440,6 +481,12 @@ export function AdminKbPage() {
                 </div>
               )}
 
+              {panel === "docs" && (
+              <>
+              <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 13, marginBottom: 8 }}>
+                <input type="checkbox" checked={onlyAttention} onChange={(event) => setOnlyAttention(event.target.checked)} />
+                只看已过时或到期待复审的文档（{documents?.filter((doc) => needsAttention(reviews.get(doc.docId))).length ?? 0}）
+              </label>
               <div className="table-wrap">
                 <table className="table">
                   <thead>
@@ -453,7 +500,7 @@ export function AdminKbPage() {
                           onChange={toggleAll}
                         />
                       </th>
-                      <th>文件</th><th className="num">文本块</th><th>状态</th><th>更新时间</th><th aria-label="操作" />
+                      <th>文件</th><th className="num">文本块</th><th>状态</th><th>时效</th><th>更新时间</th><th aria-label="操作" />
                     </tr>
                   </thead>
                   <tbody>
@@ -476,6 +523,7 @@ export function AdminKbPage() {
                           )}
                         </td>
                         <td>—</td>
+                        <td>—</td>
                         <td>
                           {row.error && (
                             <button type="button" className="icon-btn" aria-label="移除失败记录" onClick={() => setUploads((rows) => rows.filter((item) => item.key !== row.key))}>
@@ -485,7 +533,7 @@ export function AdminKbPage() {
                         </td>
                       </tr>
                     ))}
-                    {documents?.map((doc) => (
+                    {documents?.filter((doc) => !onlyAttention || needsAttention(reviews.get(doc.docId))).map((doc) => (
                       <tr key={doc.docId}>
                         <td>
                           <input
@@ -505,6 +553,24 @@ export function AdminKbPage() {
                             ? <span className="chip chip-success">可用</span>
                             : <span className="chip chip-danger" title="索引仍在，但源文件已丢失，建议重新上传">源文件缺失</span>}
                         </td>
+                        <td>
+                          <button type="button" className="btn" style={{ padding: "1px 6px", border: "none" }} aria-label={`设置 ${doc.filename} 的时效`} onClick={() => setReviewing(reviewing === doc.docId ? null : doc.docId)}>
+                            <ReviewChip review={reviews.get(doc.docId)} />
+                          </button>
+                          {reviewing === doc.docId && kbId && (
+                            <ReviewEditor
+                              kbId={kbId}
+                              docId={doc.docId}
+                              filename={doc.filename}
+                              review={reviews.get(doc.docId)}
+                              onClose={() => setReviewing(null)}
+                              onSaved={(review) => {
+                                setReviews((current) => new Map(current).set(review.docId, review));
+                                setMessage({ kind: "ok", text: review.outdated ? `已将 ${doc.filename} 标记为已过时，它不再参与检索` : `已更新 ${doc.filename} 的时效` });
+                              }}
+                            />
+                          )}
+                        </td>
                         <td>{formatDate(doc.updatedAt)}</td>
                         <td>
                           <button type="button" className="icon-btn" aria-label={`删除 ${doc.filename}`} onClick={() => remove(doc)}>
@@ -520,6 +586,8 @@ export function AdminKbPage() {
                 <div className="empty">还没有文档，点击"上传文档"添加 PDF、Word（.docx）、PPT（.pptx）、Markdown 或 TXT 文件</div>
               )}
               {!documents && <div className="muted" style={{ padding: 12 }}>正在加载…</div>}
+              </>
+              )}
             </section>
           )}
         </div>

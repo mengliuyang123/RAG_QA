@@ -89,6 +89,7 @@ class ScopeResolver:
 
     def resolve(
         self, scope: KnowledgeScope, *, preferred_kb_ids: tuple[str, ...] = (),
+        allowed_kb_ids: frozenset[str] | None = None,
     ) -> ScopePlan:
         """验证显式范围，或保守处理自动选择。
 
@@ -102,7 +103,11 @@ class ScopeResolver:
         Raises:
             InvalidKnowledgeScopeError: 用户指定的知识库不存在。
         """
-        all_ids = tuple(sorted(kb.id for kb in self._catalog.list()))
+        all_ids = tuple(sorted(
+            kb.id for kb in self._catalog.list()
+            # 用户无权查看的知识库视同不存在，自动选库与扩大范围都不会触及它们。
+            if allowed_kb_ids is None or kb.id in allowed_kb_ids
+        ))
         if not all_ids:
             raise InvalidKnowledgeScopeError("没有可用知识库")
         if scope.mode == "explicit":

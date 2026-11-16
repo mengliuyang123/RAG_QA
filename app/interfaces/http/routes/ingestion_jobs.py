@@ -24,7 +24,12 @@ from app.application.errors import DocumentAlreadyExistsError
 from app.application.ingestion.jobs import IngestionJobService
 from app.domain.auth import User
 from app.domain.ingestion_jobs import IngestionJob
-from app.interfaces.http.auth import require_admin
+from app.interfaces.http.auth import require_user
+from app.domain.knowledge_access import KbPermissions
+from app.interfaces.http.kb_permissions import ensure_editor
+from app.interfaces.http.kb_permissions import ensure_unrestricted
+from app.interfaces.http.kb_permissions import ensure_visible
+from app.interfaces.http.kb_permissions import kb_permissions
 
 
 router = APIRouter(prefix="/admin")
@@ -88,7 +93,8 @@ async def submit_ingestion(
     request: Request, response: Response,
     kb_id: Annotated[str, Path(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")],
     file: Annotated[UploadFile, File()],
-    user: Annotated[User, Depends(require_admin)],
+    user: Annotated[User, Depends(require_user)],
+    permissions: Annotated[KbPermissions, Depends(kb_permissions)],
     service: Annotated[IngestionJobService, Depends(get_job_service)],
     on_conflict: Annotated[Literal["replace", "keep_both"] | None, Form()] = None,
     replace_doc_id: Annotated[UUID | None, Form()] = None,
@@ -109,6 +115,7 @@ async def submit_ingestion(
         202对应的queued标识，实际进度通过GET读取；内容相同则200返回已有文档。
     """
     try:
+        ensure_editor(permissions, kb_id)
         worker = current_container(request).ingestion_worker
         worker.ensure_running()
         content = await file.read(service.max_upload_size + 1)
@@ -141,6 +148,7 @@ def get_ingestion_progress(
     response: Response,
     job_id: Annotated[str, Path(min_length=1, max_length=128)],
     service: Annotated[IngestionJobService, Depends(get_job_service)],
+    permissions: Annotated[KbPermissions, Depends(kb_permissions)],
 ) -> IngestionJob:
     """不等文档写锁读取真实持久状态，不暴露摘要、路径和租约。
 
@@ -153,4 +161,9 @@ def get_ingestion_progress(
         当前公开状态和安全失败分类。
     """
     response.headers["Cache-Control"] = "no-store"
-    return service.get(job_id)
+    if not permissions.unrestricted and not permissions.editable:
+        # 不是任何知识库 editor 的成员在查询前就拒绝，不透露任务是否存在。
+        ensure_unrestricted(permissions)
+    job = service.get(job_id)
+    ensure_editor(permissions, job.kb_id)
+    return job

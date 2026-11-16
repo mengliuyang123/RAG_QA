@@ -9,6 +9,8 @@ import {
   BarChart3Icon,
   BookOpenIcon,
   ClipboardCheckIcon,
+  CoinsIcon,
+  KeyRoundIcon,
   LogOutIcon,
   MenuIcon,
   MoreHorizontalIcon,
@@ -23,6 +25,7 @@ import {
 import { createContext, Fragment, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { api } from "../api";
+import { ChangePasswordDialog } from "./ChangePasswordDialog";
 import { RagRuntimeProvider, useRagThread } from "../runtime/RagRuntime";
 import { useApp } from "../state/AppContext";
 import { Button } from "@/components/ui/button";
@@ -220,8 +223,15 @@ function NavItem({ to, icon, label }: { to: string; icon: ReactNode; label: stri
   );
 }
 
+/** 管理员，或至少是一个知识库的 editor。 */
+export function canManageKnowledge(user: { role: string; editableKbIds?: string[] | null } | null): boolean {
+  if (!user) return false;
+  return user.role === "admin" || (user.editableKbIds?.length ?? 0) > 0;
+}
+
 function Sidebar({ open }: { open: boolean }) {
   const { user, logout } = useApp();
+  const [changingPassword, setChangingPassword] = useState(false);
 
   return (
     <nav
@@ -240,11 +250,18 @@ function Sidebar({ open }: { open: boolean }) {
 
       <div className="flex flex-col gap-0.5 border-t pt-2">
         <NavItem to="/kb" icon={<BookOpenIcon />} label="知识库" />
+        {user?.role !== "admin" && canManageKnowledge(user) && (
+          <>
+            <div className="px-2.5 pt-2 pb-1 text-xs font-medium text-muted-foreground">我负责的知识库</div>
+            <NavItem to="/admin/kb" icon={<SettingsIcon />} label="知识库管理" />
+          </>
+        )}
         {user?.role === "admin" && (
           <>
             <div className="px-2.5 pt-2 pb-1 text-xs font-medium text-muted-foreground">管理后台</div>
             <NavItem to="/admin/kb" icon={<SettingsIcon />} label="知识库管理" />
             <NavItem to="/admin/insights" icon={<BarChart3Icon />} label="问题洞察" />
+            <NavItem to="/admin/usage" icon={<CoinsIcon />} label="用量与费用" />
             <NavItem to="/admin/gaps" icon={<ClipboardCheckIcon />} label="知识缺口" />
             <NavItem to="/admin/users" icon={<UsersIcon />} label="用户管理" />
             <NavItem to="/admin/settings" icon={<SlidersHorizontalIcon />} label="模型配置" />
@@ -258,6 +275,9 @@ function Sidebar({ open }: { open: boolean }) {
           {api.mode === "mock" && (
             <span className="rounded border px-1.5 text-[11px] text-muted-foreground">演示</span>
           )}
+          <TooltipIconButton tooltip="修改口令" aria-label="修改口令" className="size-7" onClick={() => setChangingPassword(true)}>
+            <KeyRoundIcon />
+          </TooltipIconButton>
           {api.mode === "live" && (
             <TooltipIconButton tooltip="退出登录" aria-label="退出" className="size-7" onClick={() => void logout()}>
               <LogOutIcon />
@@ -265,6 +285,7 @@ function Sidebar({ open }: { open: boolean }) {
           )}
         </div>
       </div>
+      {changingPassword && <ChangePasswordDialog onClose={() => setChangingPassword(false)} />}
     </nav>
   );
 }

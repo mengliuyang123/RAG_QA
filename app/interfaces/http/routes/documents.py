@@ -26,9 +26,25 @@ from app.interfaces.http.dependencies import get_document_service
 from app.interfaces.http.schemas import DocumentDeleteResponse
 from app.interfaces.http.schemas import DocumentListResponse
 from app.domain.knowledge_bases import KB_ID_PATTERN
+from app.domain.knowledge_access import KbPermissions
+from app.interfaces.http.kb_permissions import ensure_editor
+from app.interfaces.http.kb_permissions import ensure_unrestricted
+from app.interfaces.http.kb_permissions import ensure_visible
+from app.interfaces.http.kb_permissions import kb_permissions
 
 
 router = APIRouter()
+
+
+def _ensure_documents_editable(
+    service: DocumentService, permissions: KbPermissions, doc_ids: tuple[UUID, ...],
+) -> None:
+    """非管理员只能删除自己是 editor 的知识库里的文档。"""
+    if permissions.unrestricted:
+        return
+    owners = {str(document.doc_id): document.kb_id for document in service.list_documents()}
+    for doc_id in doc_ids:
+        ensure_editor(permissions, owners.get(str(doc_id)) or "")
 logger = logging.getLogger(__name__)
 
 
@@ -49,6 +65,7 @@ def list_documents(
         Depends(get_document_service),
     ],
     response: Response,
+    permissions: Annotated[KbPermissions, Depends(kb_permissions)],
     kb_id: Annotated[str | None, Query(pattern=KB_ID_PATTERN)] = None,
 ) -> DocumentListResponse:
     """返回当前向量存储中的文档聚合列表。
@@ -65,6 +82,10 @@ def list_documents(
         HTTPException: 列表读取发生未知内部错误。
         DocumentStorageCorruptionError: 存储元数据损坏。
     """
+    if kb_id is None:
+        ensure_unrestricted(permissions)
+    else:
+        ensure_editor(permissions, kb_id)
     try:
         response.headers["Cache-Control"] = "no-store"
         documents = service.list_documents() if kb_id is None else service.list_documents(kb_id=kb_id)
@@ -116,6 +137,7 @@ def delete_documents(
     body: BatchDeleteRequest,
     service: Annotated[DocumentService, Depends(get_document_service)],
     response: Response,
+    permissions: Annotated[KbPermissions, Depends(kb_permissions)],
 ) -> BatchDeleteResponse:
     """按一组 doc_id 删除分块、登记与源文件，入库失败的文档同样可删。
 
@@ -128,6 +150,7 @@ def delete_documents(
         已删除与不存在的文档。
     """
     response.headers["Cache-Control"] = "no-store"
+    _ensure_documents_editable(service, permissions, tuple(body.doc_ids))
     result = service.delete_documents(tuple(body.doc_ids))
     return BatchDeleteResponse(deleted=list(result.deleted), not_found=list(result.not_found))
 
@@ -150,6 +173,7 @@ def delete_document(
         DocumentService,
         Depends(get_document_service),
     ],
+    permissions: Annotated[KbPermissions, Depends(kb_permissions)],
 ) -> DocumentDeleteResponse:
     """删除一个文档的索引和受控目录内源文件。
 
@@ -166,6 +190,7 @@ def delete_document(
         DocumentDeletePartialError: 索引已删除但源文件清理失败。
         DocumentStorageCorruptionError: 存储元数据损坏。
     """
+    _ensure_documents_editable(service, permissions, (doc_id,))
     try:
         result = service.delete_document(doc_id)
         return DocumentDeleteResponse.model_validate(

@@ -15,6 +15,11 @@ from fastapi import Response
 from app.interfaces.http.container_runtime import current_container
 from app.application.knowledge.browse import KnowledgeBrowseService
 from app.domain.knowledge_bases import KB_ID_PATTERN
+from app.domain.knowledge_access import KbPermissions
+from app.interfaces.http.kb_permissions import ensure_editor
+from app.interfaces.http.kb_permissions import ensure_unrestricted
+from app.interfaces.http.kb_permissions import ensure_visible
+from app.interfaces.http.kb_permissions import kb_permissions
 from app.domain.knowledge_views import DocumentContext
 from app.domain.knowledge_views import KnowledgeDocumentPage
 from app.domain.suggestions import SuggestedQuestions
@@ -39,6 +44,7 @@ def get_knowledge_browse(request: Request) -> KnowledgeBrowseService:
 def suggested_questions(
     response: Response,
     service: Annotated[KnowledgeBrowseService, Depends(get_knowledge_browse)],
+    permissions: Annotated[KbPermissions, Depends(kb_permissions)],
     kb_id: Annotated[str | None, Query(pattern=KB_ID_PATTERN)] = None,
     limit: Annotated[int, Query(ge=1, le=20)] = 3,
 ) -> SuggestedQuestions:
@@ -54,13 +60,19 @@ def suggested_questions(
         已发布预设，未配置时为空。
     """
     response.headers["Cache-Control"] = "no-store"
-    return service.suggested_questions(kb_id, limit)
+    if kb_id is not None:
+        ensure_visible(permissions, kb_id)
+    result = service.suggested_questions(kb_id, limit)
+    return result.model_copy(update={"questions": tuple(
+        question for question in result.questions if permissions.can_view(question.kb_id)
+    )})
 
 
 @router.get("/knowledge-bases/{kb_id}/documents", response_model=KnowledgeDocumentPage)
 def list_knowledge_documents(
     kb_id: Annotated[str, Path(pattern=KB_ID_PATTERN)], response: Response,
     service: Annotated[KnowledgeBrowseService, Depends(get_knowledge_browse)],
+    permissions: Annotated[KbPermissions, Depends(kb_permissions)],
     q: Annotated[str | None, Query(max_length=200)] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     cursor: Annotated[str | None, Query(max_length=2048)] = None,
@@ -78,6 +90,7 @@ def list_knowledge_documents(
     Returns:
         文档元数据和可选下一页游标。
     """
+    ensure_visible(permissions, kb_id)
     response.headers["Cache-Control"] = "no-store"
     try:
         return service.list_documents(kb_id, q=q, limit=limit, cursor=cursor)
@@ -90,6 +103,7 @@ def get_document_context(
     doc_id: UUID, chunk_id: Annotated[str, Path(min_length=1, max_length=2048)],
     response: Response,
     service: Annotated[KnowledgeBrowseService, Depends(get_knowledge_browse)],
+    permissions: Annotated[KbPermissions, Depends(kb_permissions)],
     context: Annotated[int, Query(ge=0, le=3)] = 1,
 ) -> DocumentContext:
     """加载引用目标及其实际邻居，块ID作为完整不透明字符串处理。
@@ -105,4 +119,7 @@ def get_document_context(
         最多七块原文及明确目标标记。
     """
     response.headers["Cache-Control"] = "no-store"
-    return service.get_context(doc_id, chunk_id, context)
+    result = service.get_context(doc_id, chunk_id, context)
+    if result.kb_id is not None:
+        ensure_visible(permissions, result.kb_id)
+    return result

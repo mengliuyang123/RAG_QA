@@ -38,6 +38,13 @@ from app.application.ingestion.service import UploadService
 from app.infrastructure.persistence.documents import PostgresDocumentRegistry
 from app.infrastructure.persistence.knowledge_gaps import PostgresKnowledgeGapRepository
 from app.application.knowledge_gaps import KnowledgeGapService
+from app.application.knowledge.access import DocumentReviewService
+from app.application.knowledge.access import FaqService
+from app.application.knowledge.access import KnowledgeAccessService
+from app.application.knowledge.access import OutdatedAwarePublication
+from app.infrastructure.persistence.knowledge_access import PostgresDocumentReviewRepository
+from app.infrastructure.persistence.knowledge_access import PostgresFaqRepository
+from app.infrastructure.persistence.knowledge_access import PostgresKnowledgeAccessRepository
 from app.application.ingestion.jobs import IngestionJobService
 from app.application.ingestion.job_pipeline import JobIngestionPipeline
 from app.application.ingestion.job_runner import IngestionJobRunner
@@ -236,6 +243,9 @@ class ApplicationContainer:
         self._ingestion_job_service_slot: _LazySlot[IngestionJobService] = _LazySlot()
         self._document_registry_slot: _LazySlot[PostgresDocumentRegistry] = _LazySlot()
         self._knowledge_gap_service_slot: _LazySlot[KnowledgeGapService] = _LazySlot()
+        self._knowledge_access_service_slot: _LazySlot[KnowledgeAccessService] = _LazySlot()
+        self._document_review_service_slot: _LazySlot[DocumentReviewService] = _LazySlot()
+        self._faq_service_slot: _LazySlot[FaqService] = _LazySlot()
         self._job_ingestion_pipeline_slot: _LazySlot[JobIngestionPipeline] = _LazySlot()
         self._ingestion_job_runner_slot: _LazySlot[IngestionJobRunner] = _LazySlot()
         self._ingestion_worker_slot: _LazySlot[IngestionWorker] = _LazySlot()
@@ -401,6 +411,33 @@ class ApplicationContainer:
         return self._get_or_create(
             self._knowledge_gap_service_slot,
             lambda: KnowledgeGapService(PostgresKnowledgeGapRepository(self.database)),
+            owned_adapter=False,
+        )
+
+    @property
+    def knowledge_access_service(self) -> KnowledgeAccessService:
+        """知识库访问控制。"""
+        return self._get_or_create(
+            self._knowledge_access_service_slot,
+            lambda: KnowledgeAccessService(PostgresKnowledgeAccessRepository(self.database)),
+            owned_adapter=False,
+        )
+
+    @property
+    def document_review_service(self) -> DocumentReviewService:
+        """文档复审与已过时标记。"""
+        return self._get_or_create(
+            self._document_review_service_slot,
+            lambda: DocumentReviewService(PostgresDocumentReviewRepository(self.database)),
+            owned_adapter=False,
+        )
+
+    @property
+    def faq_service(self) -> FaqService:
+        """标准答案。"""
+        return self._get_or_create(
+            self._faq_service_slot,
+            lambda: FaqService(PostgresFaqRepository(self.database)),
             owned_adapter=False,
         )
 
@@ -1128,7 +1165,10 @@ class ApplicationContainer:
             keyword_retriever=self.keyword_index,
             reranker=self._get_reranker(),
             top_k_rerank=self._settings.top_k_rerank,
-            publication=self.ingestion_job_repository,
+            # 已过时文档与未发布文档一样在召回前排除。
+            publication=OutdatedAwarePublication(
+                self.ingestion_job_repository, PostgresDocumentReviewRepository(self.database),
+            ),
         )
 
     @property
@@ -1177,6 +1217,7 @@ class ApplicationContainer:
             top_k=self._settings.top_k,
             turn_timeout_seconds=self._settings.agent_turn_timeout_seconds,
             traces=self.trace_service,
+            permissions=lambda user_id: self.knowledge_access_service.permissions_for_user_id(user_id),
         )
 
     def _get_understanding_provider(self) -> StructuredOutputProvider:

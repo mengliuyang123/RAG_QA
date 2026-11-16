@@ -1,5 +1,6 @@
 import {
   errorMessage,
+  normalizeCitation,
   normalizeDataBlock,
   normalizeDocument,
   normalizeExistingDocument,
@@ -19,8 +20,15 @@ import type {
   GapCheck,
   GapCheckResult,
   GapInput,
+  CostEstimate,
+  DocumentReview,
+  FaqState,
+  FeedbackItem,
+  KbAccess,
   KnowledgeGap,
   ManagedUser,
+  TraceSummary,
+  UsageRow,
   ModelSettings,
   RefusalRecord,
   User,
@@ -112,6 +120,7 @@ function toUser(raw: Raw): User {
           retryAfter: Number(quota.retry_after ?? 0),
         }
       : null,
+    editableKbIds: Array.isArray(raw.editable_kb_ids) ? raw.editable_kb_ids.map(String) : null,
   };
 }
 
@@ -188,6 +197,32 @@ export function createLiveApi(): Api {
 
     async logout() {
       await request("/api/auth/logout", { method: "POST" });
+    },
+
+    async changePassword(currentPassword, newPassword) {
+      await request("/api/me/password", {
+        method: "POST",
+        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+      });
+    },
+
+    async createShare(turnId) {
+      const body = await request<Raw>(`/api/turns/${encodeURIComponent(turnId)}/shares`, {
+        method: "POST",
+        body: JSON.stringify({ expires_in_days: 30 }),
+      });
+      return { url: String(body.url), expiresAt: String(body.expires_at) };
+    },
+
+    async getShare(token) {
+      const body = await request<Raw>(`/api/shares/${encodeURIComponent(token)}`);
+      return {
+        question: String(body.question),
+        answer: String(body.answer),
+        citations: (Array.isArray(body.citations) ? (body.citations as Raw[]) : []).map(normalizeCitation),
+        sharedBy: String(body.shared_by ?? ""),
+        createdAt: String(body.created_at ?? ""),
+      };
     },
 
     async listKnowledgeBases() {
@@ -555,6 +590,112 @@ export function createLiveApi(): Api {
         }
       },
 
+      async getSuggestedQuestions(kbId) {
+        const body = await request<{ questions: Raw[] }>(
+          `/api/suggested-questions?kb_id=${encodeURIComponent(kbId)}&limit=20`,
+        );
+        return body.questions.map((raw) => String(raw.text));
+      },
+
+      async setSuggestedQuestions(kbId, questions) {
+        const body = await request<{ questions: Raw[] }>(
+          `/api/admin/knowledge-bases/${encodeURIComponent(kbId)}/suggested-questions`,
+          { method: "PUT", body: JSON.stringify({ questions }) },
+        );
+        return body.questions.map((raw) => String(raw.text));
+      },
+
+      async listFeedback() {
+        const body = await request<{ feedback: Raw[] }>("/api/admin/insights/feedback?limit=100");
+        return body.feedback.map(toFeedback);
+      },
+
+      async triageFeedback(id, triage, revision) {
+        return toFeedback(await request<Raw>(`/api/admin/insights/feedback/${encodeURIComponent(id)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ triage, expected_revision: revision }),
+        }));
+      },
+
+      async usage(days, groupBy) {
+        const body = await request<Raw>(`/api/admin/usage?days=${days}&group_by=${groupBy}`);
+        return {
+          days: Number(body.days ?? days),
+          groupBy,
+          totals: toUsageRow({ key: "total", label: "合计", ...(body.totals as Raw) }),
+          rows: (Array.isArray(body.rows) ? (body.rows as Raw[]) : []).map(toUsageRow),
+          retentionLimited: body.retention_limited === true,
+        };
+      },
+
+      async recentTraces(limit) {
+        const body = await request<{ traces: Raw[] }>(`/api/admin/traces?limit=${limit}`);
+        return body.traces.map(toTraceSummary);
+      },
+
+      async getKbAccess(kbId) {
+        return toKbAccess(await request<Raw>(`/api/admin/knowledge-bases/${encodeURIComponent(kbId)}/access`));
+      },
+
+      async saveKbAccess(kbId, access) {
+        return toKbAccess(await request<Raw>(`/api/admin/knowledge-bases/${encodeURIComponent(kbId)}/access`, {
+          method: "PUT",
+          body: JSON.stringify({
+            restricted: access.restricted,
+            members: access.members.map((member) => ({ user_id: member.userId, role: member.role })),
+          }),
+        }));
+      },
+
+      async listDocumentReviews(kbId) {
+        const body = await request<{ reviews: Raw[] }>(
+          `/api/admin/knowledge-bases/${encodeURIComponent(kbId)}/document-reviews`,
+        );
+        return body.reviews.map(toReview);
+      },
+
+      async saveDocumentReview(kbId, docId, review) {
+        return toReview(await request<Raw>(
+          `/api/admin/knowledge-bases/${encodeURIComponent(kbId)}/document-reviews/${encodeURIComponent(docId)}`,
+          {
+            method: "PUT",
+            body: JSON.stringify({ review_due_on: review.reviewDueOn, outdated: review.outdated, note: review.note }),
+          },
+        ));
+      },
+
+      async listFaq(kbId) {
+        return toFaqState(await request<Raw>(`/api/admin/knowledge-bases/${encodeURIComponent(kbId)}/faq`));
+      },
+
+      async createFaq(kbId, entry) {
+        return toFaqState(await request<Raw>(`/api/admin/knowledge-bases/${encodeURIComponent(kbId)}/faq`, {
+          method: "POST",
+          body: JSON.stringify(entry),
+        }));
+      },
+
+      async updateFaq(kbId, id, entry) {
+        return toFaqState(await request<Raw>(
+          `/api/admin/knowledge-bases/${encodeURIComponent(kbId)}/faq/${encodeURIComponent(id)}`,
+          { method: "PUT", body: JSON.stringify(entry) },
+        ));
+      },
+
+      async deleteFaq(kbId, id) {
+        return toFaqState(await request<Raw>(
+          `/api/admin/knowledge-bases/${encodeURIComponent(kbId)}/faq/${encodeURIComponent(id)}`,
+          { method: "DELETE" },
+        ));
+      },
+
+      async publishFaq(kbId) {
+        return toFaqState(await request<Raw>(
+          `/api/admin/knowledge-bases/${encodeURIComponent(kbId)}/faq/publish`,
+          { method: "POST" },
+        ));
+      },
+
       async getModelSettings() {
         return toModelSettings(await request<Raw>("/api/admin/settings/models"));
       },
@@ -566,6 +707,110 @@ export function createLiveApi(): Api {
         }));
       },
     },
+  };
+}
+
+function toFeedback(raw: Raw): FeedbackItem {
+  const triage = raw.triage;
+  return {
+    id: String(raw.feedback_id),
+    turnId: String(raw.turn_id),
+    question: String(raw.question ?? ""),
+    answer: String(raw.answer ?? ""),
+    citations: (Array.isArray(raw.citations) ? (raw.citations as Raw[]) : []).map(normalizeCitation),
+    reasons: (Array.isArray(raw.reasons) ? raw.reasons.map(String) : []) as FeedbackItem["reasons"],
+    comment: typeof raw.comment === "string" ? raw.comment : null,
+    revision: Number(raw.revision ?? 1),
+    triage: triage === "retrieval_error" || triage === "generation_error" || triage === "missing_content" || triage === "not_an_issue"
+      ? triage
+      : null,
+    createdAt: String(raw.created_at ?? ""),
+  };
+}
+
+function toCosts(raw: unknown): { costs: CostEstimate[]; status: UsageRow["costStatus"] } {
+  const cost = (raw && typeof raw === "object" ? raw : {}) as Raw;
+  const byCurrency = new Map<string, number>();
+  for (const estimate of Array.isArray(cost.estimates) ? (cost.estimates as Raw[]) : []) {
+    const currency = String(estimate.currency);
+    byCurrency.set(currency, (byCurrency.get(currency) ?? 0) + Number(estimate.amount ?? 0));
+  }
+  const status = cost.status === "estimated" || cost.status === "partial" ? cost.status : "unknown";
+  return { costs: [...byCurrency].map(([currency, amount]) => ({ currency, amount })), status };
+}
+
+function tokenCounts(raw: unknown): { inputTokens: number; outputTokens: number } {
+  const tokens = (raw && typeof raw === "object" ? raw : {}) as Raw;
+  return { inputTokens: Number(tokens.known_input ?? 0), outputTokens: Number(tokens.known_output ?? 0) };
+}
+
+function toUsageRow(raw: Raw): UsageRow {
+  const { costs, status } = toCosts(raw.cost);
+  return {
+    key: String(raw.key ?? ""),
+    label: String(raw.label ?? raw.key ?? ""),
+    questions: Number(raw.questions ?? 0),
+    modelCalls: Number(raw.model_calls ?? 0),
+    ...tokenCounts(raw.tokens),
+    costs,
+    costStatus: status,
+  };
+}
+
+function toTraceSummary(raw: Raw): TraceSummary {
+  const outcome = raw.outcome;
+  const lane = raw.lane;
+  return {
+    id: String(raw.trace_id),
+    question: typeof raw.question === "string" ? raw.question : null,
+    createdAt: String(raw.created_at ?? ""),
+    outcome: outcome === "answered" || outcome === "refused" || outcome === "clarification" ? outcome : null,
+    lane: lane === "direct" || lane === "clarify" || lane === "fast" || lane === "agent" ? lane : null,
+    latencyMs: typeof raw.latency_ms === "number" ? raw.latency_ms : null,
+    modelCalls: Number(raw.model_calls ?? 0),
+    ...tokenCounts(raw.tokens),
+    costs: toCosts(raw.cost).costs,
+  };
+}
+
+function toKbAccess(raw: Raw): KbAccess {
+  return {
+    kbId: String(raw.kb_id),
+    restricted: raw.restricted === true,
+    members: (Array.isArray(raw.members) ? (raw.members as Raw[]) : []).map((member) => ({
+      userId: String(member.user_id),
+      role: member.role === "editor" ? "editor" : "viewer",
+      username: typeof member.username === "string" ? member.username : null,
+      name: typeof member.name === "string" ? member.name : null,
+    })),
+  };
+}
+
+function toReview(raw: Raw): DocumentReview {
+  return {
+    docId: String(raw.doc_id),
+    kbId: String(raw.kb_id),
+    reviewDueOn: typeof raw.review_due_on === "string" ? raw.review_due_on : null,
+    outdated: raw.outdated === true,
+    note: typeof raw.note === "string" ? raw.note : null,
+  };
+}
+
+function toFaqState(raw: Raw): FaqState {
+  const publication = raw.publication as Raw | null | undefined;
+  const status = publication?.status;
+  return {
+    entries: (Array.isArray(raw.entries) ? (raw.entries as Raw[]) : []).map((entry) => ({
+      id: String(entry.id),
+      kbId: String(entry.kb_id),
+      question: String(entry.question),
+      answer: String(entry.answer),
+      updatedAt: String(entry.updated_at ?? ""),
+    })),
+    filename: String(raw.filename ?? "常见问题（标准答案）.md"),
+    publication: publication && (status === "queued" || status === "unchanged" || status === "removed" || status === "none" || status === "busy")
+      ? { status, jobId: typeof publication.job_id === "string" ? publication.job_id : null }
+      : null,
   };
 }
 

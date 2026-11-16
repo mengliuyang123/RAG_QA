@@ -1,11 +1,14 @@
 import { normalizeDocument, normalizeToolCall, normalizeTurn } from "./adapters";
 import {
   MOCK_DOCUMENTS,
+  MOCK_FEEDBACK,
   MOCK_GAP_CANDIDATES,
   MOCK_INSIGHTS,
   MOCK_KNOWLEDGE_BASES,
   MOCK_REFUSALS,
   MOCK_SUGGESTED_QUESTIONS,
+  MOCK_TRACES,
+  MOCK_USAGE,
   MOCK_USERS,
   type MockDocument,
 } from "./mockData";
@@ -20,8 +23,14 @@ import type {
   KbDocument,
   KbScope,
   KnowledgeBase,
+  DocumentReview,
+  FaqEntry,
+  FaqState,
+  FeedbackItem,
+  KbAccess,
   KnowledgeGap,
   ManagedUser,
+  SharedTurn,
   ModelSettings,
   StreamHandlers,
   Turn,
@@ -383,6 +392,36 @@ export function createMockApi(): Api {
     name: "小刘",
     role: "admin",
     quota: { limit: 10, remaining: 10, windowSeconds: 60, retryAfter: 0 },
+    editableKbIds: null,
+  };
+  // 演示口令只存在内存里，用于模拟"当前口令不正确"。
+  let password = "demo-password-123";
+  let suggested = MOCK_SUGGESTED_QUESTIONS.map((item) => ({ ...item }));
+  const shares = new Map<string, SharedTurn>();
+  const feedback: FeedbackItem[] = structuredClone(MOCK_FEEDBACK);
+  const access = new Map<string, KbAccess>();
+  const reviews = new Map<string, DocumentReview>();
+  const faqs = new Map<string, FaqEntry[]>();
+  const FAQ_FILE = "常见问题（标准答案）.md";
+
+  const faqState = (kbId: string, publish: boolean): FaqState => {
+    const entries = faqs.get(kbId) ?? [];
+    let publication: FaqState["publication"] = null;
+    if (publish) {
+      // 与后端一致：标准答案渲染成一篇文档，替换旧版本；删空后移除该文档。
+      const index = documents.findIndex((doc) => doc.kbId === kbId && doc.filename === FAQ_FILE);
+      if (index !== -1) documents.splice(index, 1);
+      if (entries.length > 0) {
+        documents.unshift({
+          docId: uuid(), kbId, filename: FAQ_FILE, updatedAt: new Date().toISOString(), fileStatus: "available",
+          chunks: entries.map((entry) => ({ text: `## ${entry.question}\n\n${entry.answer}`, page: null })),
+        });
+        publication = { status: "queued", jobId: `job_${uuid().replace(/-/g, "")}` };
+      } else {
+        publication = { status: index === -1 ? "none" : "removed", jobId: null };
+      }
+    }
+    return { entries: structuredClone(entries), filename: FAQ_FILE, publication };
   };
 
   const toDocument = (doc: MockDocument): KbDocument =>
@@ -436,6 +475,34 @@ export function createMockApi(): Api {
       await sleep(40);
     },
 
+    async changePassword(currentPassword, newPassword) {
+      await sleep(120);
+      if (currentPassword !== password) throw new ApiError(400, "当前口令不正确", "wrong_password");
+      if (newPassword.length < 15 || newPassword.length > 128) {
+        throw new ApiError(422, "新口令长度必须为15–128字符", "validation_error");
+      }
+      password = newPassword;
+    },
+
+    async createShare(turnId) {
+      await sleep(100);
+      const turn = [...conversations.values()].flatMap((item) => item.turns).find((item) => item.id === turnId);
+      if (!turn) throw new ApiError(404, "回答不存在", "not_found");
+      const token = `shr_${uuid().replace(/-/g, "")}`;
+      shares.set(token, {
+        question: turn.question, answer: turn.answer, citations: turn.citations,
+        sharedBy: user.name, createdAt: turn.createdAt,
+      });
+      return { url: `/s/${token}`, expiresAt: new Date(Date.now() + 30 * 86_400_000).toISOString() };
+    },
+
+    async getShare(token) {
+      await sleep(100);
+      const shared = shares.get(token);
+      if (!shared) throw new ApiError(404, "分享不存在", "share_not_found");
+      return structuredClone(shared);
+    },
+
     async listKnowledgeBases(): Promise<KnowledgeBase[]> {
       await sleep(120);
       return knowledgeBases.map((kb) => ({
@@ -456,7 +523,7 @@ export function createMockApi(): Api {
 
     async suggestedQuestions() {
       await sleep(80);
-      return MOCK_SUGGESTED_QUESTIONS;
+      return suggested.map((item) => ({ ...item }));
     },
 
     async listConversations() {
@@ -756,6 +823,126 @@ export function createMockApi(): Api {
         // 演示规则：本次会话里向该知识库上传过文档后，复测视为能回答。
         const answered = documents.some((doc) => doc.content !== undefined && (!kbId || doc.kbId === kbId));
         return { question, outcome: answered ? "answered" : "refused", answered };
+      },
+
+      async getSuggestedQuestions(kbId) {
+        await sleep(80);
+        return suggested.filter((item) => item.kbId === kbId).map((item) => item.text);
+      },
+
+      async setSuggestedQuestions(kbId, questions) {
+        await sleep(100);
+        const cleaned = [...new Set(questions.map((text) => text.trim()).filter(Boolean))];
+        if (cleaned.length > 50) throw new ApiError(422, "最多 50 个推荐问题", "validation_error");
+        suggested = [
+          ...suggested.filter((item) => item.kbId !== kbId),
+          ...cleaned.map((text, index) => ({ id: `${kbId}-${index}`, kbId, text })),
+        ];
+        return cleaned;
+      },
+
+      async listFeedback() {
+        await sleep(100);
+        return structuredClone(feedback);
+      },
+
+      async triageFeedback(id, triage, revision) {
+        await sleep(100);
+        const item = feedback.find((entry) => entry.id === id);
+        if (!item) throw new ApiError(404, "反馈不存在", "not_found");
+        if (item.revision !== revision) throw new ApiError(409, "用户已修改反馈，请刷新后重试", "conflict");
+        item.triage = triage;
+        return structuredClone(item);
+      },
+
+      async usage(days, groupBy) {
+        await sleep(120);
+        const rows = structuredClone(MOCK_USAGE[groupBy]);
+        const sum = (pick: (row: (typeof rows)[number]) => number) => rows.reduce((total, row) => total + pick(row), 0);
+        return {
+          days, groupBy, rows, retentionLimited: false,
+          totals: {
+            key: "total", label: "合计", questions: sum((row) => row.questions), modelCalls: sum((row) => row.modelCalls),
+            inputTokens: sum((row) => row.inputTokens), outputTokens: sum((row) => row.outputTokens),
+            costs: [{ currency: "CNY", amount: Number(sum((row) => row.costs[0].amount).toFixed(2)) }],
+            costStatus: "estimated",
+          },
+        };
+      },
+
+      async recentTraces(limit) {
+        await sleep(100);
+        return structuredClone(MOCK_TRACES).slice(0, limit);
+      },
+
+      async getKbAccess(kbId) {
+        await sleep(80);
+        return structuredClone(access.get(kbId) ?? { kbId, restricted: false, members: [] });
+      },
+
+      async saveKbAccess(kbId, input) {
+        await sleep(100);
+        const ids = input.members.map((member) => member.userId);
+        if (new Set(ids).size !== ids.length) throw new ApiError(422, "同一用户只能出现一次", "validation_error");
+        const members = input.members.map((member) => {
+          const found = users.find((item) => item.id === member.userId);
+          if (!found) throw new ApiError(422, "成员中有不存在的用户", "validation_error");
+          return { userId: found.id, role: member.role, username: found.username, name: found.name };
+        });
+        const saved = { kbId, restricted: input.restricted, members };
+        access.set(kbId, saved);
+        return structuredClone(saved);
+      },
+
+      async listDocumentReviews(kbId) {
+        await sleep(80);
+        return [...reviews.values()].filter((review) => review.kbId === kbId).map((review) => ({ ...review }));
+      },
+
+      async saveDocumentReview(kbId, docId, input) {
+        await sleep(100);
+        if (!documents.some((doc) => doc.docId === docId && doc.kbId === kbId)) {
+          throw new ApiError(404, "文档不存在", "not_found");
+        }
+        const saved = { docId, kbId, reviewDueOn: input.reviewDueOn, outdated: input.outdated, note: input.note?.trim() || null };
+        reviews.set(docId, saved);
+        return { ...saved };
+      },
+
+      async listFaq(kbId) {
+        await sleep(80);
+        return faqState(kbId, false);
+      },
+
+      async createFaq(kbId, entry) {
+        await sleep(120);
+        const now = new Date().toISOString();
+        faqs.set(kbId, [...(faqs.get(kbId) ?? []), {
+          id: uuid().replace(/-/g, ""), kbId, question: entry.question.trim(), answer: entry.answer.trim(), updatedAt: now,
+        }]);
+        return faqState(kbId, true);
+      },
+
+      async updateFaq(kbId, id, entry) {
+        await sleep(120);
+        const list = faqs.get(kbId) ?? [];
+        const target = list.find((item) => item.id === id);
+        if (!target) throw new ApiError(404, "标准答案不存在", "not_found");
+        Object.assign(target, { question: entry.question.trim(), answer: entry.answer.trim(), updatedAt: new Date().toISOString() });
+        return faqState(kbId, true);
+      },
+
+      async deleteFaq(kbId, id) {
+        await sleep(120);
+        const list = faqs.get(kbId) ?? [];
+        if (!list.some((item) => item.id === id)) throw new ApiError(404, "标准答案不存在", "not_found");
+        faqs.set(kbId, list.filter((item) => item.id !== id));
+        return faqState(kbId, true);
+      },
+
+      async publishFaq(kbId) {
+        await sleep(120);
+        return faqState(kbId, true);
       },
 
       async getModelSettings() {

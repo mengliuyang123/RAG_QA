@@ -89,11 +89,13 @@ function GapDetail({ row, onSaved }: { row: GapRow; onSaved(gap: KnowledgeGap, m
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<GapCheckResult[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [answer, setAnswer] = useState<string | null>(null);
 
   useEffect(() => {
     setKbId(row.kbId ?? knowledgeBases[0]?.id ?? null);
     setProgress(null);
     setError(null);
+    setAnswer(null);
   }, [row.key]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const save = async (patch: Partial<GapInput>, message: string) => {
@@ -118,6 +120,15 @@ function GapDetail({ row, onSaved }: { row: GapRow; onSaved(gap: KnowledgeGap, m
     if (!kbId) throw new Error("请先选择要补充文档的知识库");
     await save({}, "已开始跟踪此缺口");
     navigate(`/admin/kb?kb=${encodeURIComponent(kbId)}&gap=${encodeURIComponent(row.key)}`);
+  });
+
+  // 不上传文档，直接为这个问题写一条标准答案，发布到所选知识库。
+  const writeAnswer = () => run(async () => {
+    if (!kbId) throw new Error("请先选择知识库");
+    if (!answer?.trim()) throw new Error("请填写标准答案");
+    await api.admin.createFaq(kbId, { question: row.title.slice(0, 500), answer: answer.trim() });
+    await save({ status: "document_added" }, "已写入标准答案并提交发布，入库完成后可复测");
+    setAnswer(null);
   });
 
   const verify = () => run(async () => {
@@ -167,6 +178,7 @@ function GapDetail({ row, onSaved }: { row: GapRow; onSaved(gap: KnowledgeGap, m
       </select>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
         <button type="button" className="btn btn-primary" disabled={busy} onClick={goUpload}>去上传文档</button>
+        <button type="button" className="btn" disabled={busy} onClick={() => setAnswer(answer === null ? "" : null)}>写标准答案</button>
         <button type="button" className="btn" disabled={busy} onClick={verify}>
           {progress ? `复测中 ${progress.length}/${row.questions.length}…` : "复测"}
         </button>
@@ -181,6 +193,13 @@ function GapDetail({ row, onSaved }: { row: GapRow; onSaved(gap: KnowledgeGap, m
           </button>
         )}
       </div>
+      {answer !== null && (
+        <div style={{ marginTop: 10 }}>
+          <label className="field-label" htmlFor="gap-answer">标准答案（问题：{row.title}）</label>
+          <textarea id="gap-answer" className="field" maxLength={5000} value={answer} onChange={(event) => setAnswer(event.target.value)} />
+          <button type="button" className="btn btn-primary" style={{ marginTop: 6 }} disabled={busy || !answer.trim()} onClick={writeAnswer}>保存并发布</button>
+        </div>
+      )}
       {error && <div role="alert" className="form-error">{error}</div>}
       {check && check.results.length > 0 && (
         <>

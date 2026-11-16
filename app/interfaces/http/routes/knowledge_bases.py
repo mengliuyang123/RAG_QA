@@ -20,6 +20,11 @@ from app.application.knowledge.deletion import KnowledgeBaseDeletionService
 from app.domain.auth import User
 from app.domain.knowledge_deletion import KnowledgeBaseDeleteResult
 from app.interfaces.http.auth import require_admin
+from app.domain.knowledge_access import KbPermissions
+from app.interfaces.http.kb_permissions import ensure_editor
+from app.interfaces.http.kb_permissions import ensure_unrestricted
+from app.interfaces.http.kb_permissions import ensure_visible
+from app.interfaces.http.kb_permissions import kb_permissions
 from app.domain.knowledge_bases import KB_ID_PATTERN
 from app.domain.knowledge_bases import KnowledgeBase
 from app.domain.knowledge_bases import KnowledgeBasePatch
@@ -115,6 +120,7 @@ def delete_knowledge_base(
 def list_knowledge_bases(
     response: Response,
     service: Annotated[KnowledgeCatalogService, Depends(get_knowledge_catalog)],
+    permissions: Annotated[KbPermissions, Depends(kb_permissions)],
 ) -> KnowledgeBaseList:
     """向已登录用户提供目录，不暴露负责人和文档正文。
 
@@ -126,12 +132,17 @@ def list_knowledge_bases(
         含空库及真实去重文档数的卡片集合。
     """
     response.headers["Cache-Control"] = "no-store"
-    return service.list()
+    catalog = service.list()
+    # 受限知识库只对成员和管理员列出。
+    return catalog.model_copy(update={"knowledge_bases": tuple(
+        card for card in catalog.knowledge_bases if permissions.can_view(card.id)
+    )})
 
 
 @admin_router.post("", status_code=201, response_model=AdminKnowledgeBaseCard)
 def create_knowledge_base(
     body: KnowledgeBaseCreateRequest, response: Response,
+    _admin: Annotated[User, Depends(require_admin)],
     service: Annotated[KnowledgeCatalogService, Depends(get_knowledge_catalog)],
 ) -> AdminKnowledgeBaseCard:
     """管理员与CSRF检查后创建目录，不接收客户端计数与时间。
@@ -153,6 +164,7 @@ def patch_knowledge_base(
     kb_id: Annotated[str, Path(pattern=KB_ID_PATTERN)],
     body: KnowledgeBasePatch, response: Response,
     service: Annotated[KnowledgeCatalogService, Depends(get_knowledge_catalog)],
+    permissions: Annotated[KbPermissions, Depends(kb_permissions)],
 ) -> AdminKnowledgeBaseCard:
     """部分更新仅改变实际传入字段，不能修改ID或创建时间。
 
@@ -166,4 +178,5 @@ def patch_knowledge_base(
         已提交的新目录元数据。
     """
     response.headers["Cache-Control"] = "no-store"
+    ensure_editor(permissions, kb_id)
     return service.patch(kb_id, body)

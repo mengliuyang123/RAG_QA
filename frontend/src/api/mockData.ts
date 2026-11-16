@@ -157,3 +157,62 @@ export const MOCK_GAP_CANDIDATES = [
     lastAskedAt: "2026-10-21T02:15:00Z",
   },
 ];
+
+// 点踩反馈示例（问答内容为虚构）。
+export const MOCK_FEEDBACK = [
+  {
+    id: "fb1",
+    turnId: "t_fb1",
+    question: "生产环境数据库连接池上限是多少",
+    answer: "根据运维手册，连接池上限为 50。",
+    citations: [{
+      position: 1, kbId: "ops", docId: "d1f0c2a4-0000-4000-8000-000000000003", chunkId: "d1f0c2a4-0000-4000-8000-000000000003:0", filename: "deploy-guide.md",
+      page: null, chunkText: "连接池上限 50。", docUpdatedAt: "2026-06-01T00:00:00Z",
+    }],
+    reasons: ["outdated" as const],
+    comment: "已经调整为 100 了",
+    revision: 1,
+    triage: null,
+    createdAt: "2026-11-10T03:00:00Z",
+  },
+  {
+    id: "fb2",
+    turnId: "t_fb2",
+    question: "专业版和企业版的区别",
+    answer: "资料中没有找到两者的完整对比。",
+    citations: [],
+    reasons: ["incomplete" as const],
+    comment: null,
+    revision: 1,
+    triage: "missing_content" as const,
+    createdAt: "2026-11-09T08:30:00Z",
+  },
+];
+
+// 用量示例：费用为按配置费率的估算。
+const usageRow = (key: string, label: string, questions: number, calls: number, input: number, output: number, amount: number) => ({
+  key, label, questions, modelCalls: calls, inputTokens: input, outputTokens: output,
+  costs: [{ currency: "CNY", amount }], costStatus: "estimated" as const,
+});
+
+export const MOCK_USAGE = {
+  day: [
+    usageRow("2026-11-15", "2026-11-15", 42, 160, 210_000, 31_000, 3.12),
+    usageRow("2026-11-16", "2026-11-16", 57, 221, 289_000, 40_500, 4.36),
+    usageRow("2026-11-17", "2026-11-17", 18, 70, 92_000, 13_000, 1.37),
+  ],
+  user: [
+    usageRow("u1", "用户 A", 61, 240, 320_000, 45_000, 4.81),
+    usageRow("u2", "用户 B", 56, 211, 271_000, 39_500, 4.04),
+  ],
+  kb: [
+    usageRow("dev", "dev", 70, 270, 352_000, 50_000, 5.31),
+    usageRow("ops", "ops", 47, 181, 239_000, 34_500, 3.54),
+  ],
+};
+
+export const MOCK_TRACES = [
+  { id: "tr1", question: "LangGraph 检查点怎么持久化", createdAt: "2026-11-17T02:10:00Z", outcome: "answered" as const, lane: "agent" as const, latencyMs: 8200, modelCalls: 7, inputTokens: 18_400, outputTokens: 1_900, costs: [{ currency: "CNY", amount: 0.28 }] },
+  { id: "tr2", question: "服务启动报数据库锁定", createdAt: "2026-11-17T01:55:00Z", outcome: "answered" as const, lane: "fast" as const, latencyMs: 2100, modelCalls: 3, inputTokens: 5_200, outputTokens: 600, costs: [{ currency: "CNY", amount: 0.08 }] },
+  { id: "tr3", question: "Redis 缓存怎么配置", createdAt: "2026-11-17T01:20:00Z", outcome: "refused" as const, lane: "agent" as const, latencyMs: 6400, modelCalls: 6, inputTokens: 14_100, outputTokens: 900, costs: [{ currency: "CNY", amount: 0.2 }] },
+];

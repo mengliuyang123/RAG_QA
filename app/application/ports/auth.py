@@ -92,12 +92,15 @@ class AuthRepository(Protocol):
             修改后的账号；不存在抛UserNotFoundError，最后管理员抛LastAdminError。
         """
 
-    def set_password(self, user_id: UUID, password_hash: str) -> None:
-        """替换口令哈希，并在同一事务撤销该账号全部会话。
+    def set_password(
+        self, user_id: UUID, password_hash: str, *, keep_token_hash: str | None = None,
+    ) -> None:
+        """替换口令哈希，并在同一事务撤销该账号会话。
 
         Args:
             user_id: 目标账号。
             password_hash: 新的带盐编码。
+            keep_token_hash: 需要保留的当前会话摘要，None表示全部撤销。
 
         Returns:
             None；不存在抛UserNotFoundError。

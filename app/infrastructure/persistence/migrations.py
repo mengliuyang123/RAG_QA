@@ -47,6 +47,9 @@ def migrate_database(dsn: str, schema: str = 'rag_qa') -> None:
         if connection.execute('SELECT 1 FROM schema_migrations WHERE version=7').fetchone() is None:
             connection.execute(Path(__file__).with_name('schema_v7.sql').read_text(encoding='utf-8'))
             connection.execute('INSERT INTO schema_migrations VALUES (7)')
+        if connection.execute('SELECT 1 FROM schema_migrations WHERE version=8').fetchone() is None:
+            connection.execute(Path(__file__).with_name('schema_v8.sql').read_text(encoding='utf-8'))
+            connection.execute('INSERT INTO schema_migrations VALUES (8)')
     # 官方 checkpoint 迁移包含并发索引，要求 autocommit。
     from langgraph.checkpoint.postgres import PostgresSaver
     from psycopg.rows import dict_row

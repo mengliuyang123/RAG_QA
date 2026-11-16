@@ -5,6 +5,7 @@ from typing import Annotated
 
 from fastapi import APIRouter
 from fastapi import Depends
+from fastapi import HTTPException
 from fastapi import Request
 from fastapi import Response
 from pydantic import BaseModel
@@ -95,6 +96,41 @@ def logout(
     return response
 
 
+class ChangePasswordRequest(BaseModel):
+    """当前口令与新口令；口令长度在路由内校验，避免422回显原文。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    current_password: SecretStr = Field(repr=False)
+    new_password: SecretStr = Field(repr=False)
+
+
+@router.post("/me/password", status_code=204)
+def change_password(
+    request: Request, body: ChangePasswordRequest,
+    user: Annotated[User, Depends(require_user)],
+) -> Response:
+    """用户自己修改口令；其他浏览器的会话被撤销，当前浏览器保持登录。
+
+    Args:
+        request: 当前请求。
+        body: 当前口令与新口令。
+        user: 已验证身份（含CSRF校验）。
+
+    Returns:
+        不含正文的响应。
+    """
+    new_password = body.new_password.get_secret_value()
+    if not 15 <= len(new_password) <= 128:
+        raise HTTPException(422, "新口令长度必须为15–128字符")
+    get_auth_service(request).change_own_password(
+        user.id, body.current_password.get_secret_value(), new_password,
+        client_id=request.client.host if request.client else "unknown",
+        current_token=request.cookies[SESSION_COOKIE],
+    )
+    return Response(status_code=204, headers={"Cache-Control": "no-store"})
+
+
 @router.get("/me")
 def me(
     request: Request, user: Annotated[User, Depends(require_user)],
@@ -111,5 +147,11 @@ def me(
         公开用户与真实提问次数额度，不冒充日限额或模型Token余额。
     """
     response.headers["Cache-Control"] = "no-store"
-    quota = current_container(request).question_admission.quota(user.id)
-    return {**user.model_dump(mode="json"), "quota": quota.model_dump()}
+    container = current_container(request)
+    quota = container.question_admission.quota(user.id)
+    permissions = container.knowledge_access_service.permissions(user)
+    return {
+        **user.model_dump(mode="json"), "quota": quota.model_dump(),
+        # 前端据此显示"知识库管理"入口；None 表示可管理全部。
+        "editable_kb_ids": None if permissions.unrestricted else sorted(permissions.editable),
+    }

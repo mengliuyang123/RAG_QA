@@ -106,6 +106,18 @@ describe("AdminGapsPage", () => {
     expect(saved.lastCheck?.results.map((item) => item.answered)).toEqual([true, true, true]);
   });
 
+  it("resolves a gap by writing a standard answer instead of uploading", async () => {
+    const create = vi.spyOn(api.admin, "createFaq");
+    renderPage();
+    const detail = await openGap("企业版支持私有化部署吗");
+    fireEvent.click(within(detail).getByRole("button", { name: "写标准答案" }));
+    fireEvent.change(within(detail).getByLabelText(/标准答案（问题/), { target: { value: "支持，需单独签署部署协议。" } });
+    fireEvent.click(within(detail).getByRole("button", { name: "保存并发布" }));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("已写入标准答案"), WAIT);
+    expect(create).toHaveBeenCalledWith("product", { question: "企业版支持私有化部署吗", answer: "支持，需单独签署部署协议。" });
+    expect(screen.getByRole("tab", { name: "已补文档 1" })).toBeTruthy();
+  });
+
   it("lets the admin mark a document as added and reopen the gap", async () => {
     renderPage();
     const detail = await openGap("灰度发布的流程是什么");

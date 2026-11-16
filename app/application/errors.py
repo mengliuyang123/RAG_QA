@@ -38,6 +38,10 @@ class SelfLockoutError(ValueError):
     """表示管理员试图降级或禁用自己的账号。"""
 
 
+class WrongPasswordError(ValueError):
+    """表示用户修改口令时提供的当前口令不正确。"""
+
+
 class LoginRateLimitError(RuntimeError):
     """表示登录尝试或口令验证并发超过限制。"""
 
