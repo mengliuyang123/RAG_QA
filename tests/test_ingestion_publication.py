@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """未发布块必须在Top-K之前排除，不能交给裁判后再隐藏。"""
 
@@ -16,10 +17,10 @@ from app.domain.ingestion_jobs import IngestionJobSubmission
 from app.domain.ingestion_jobs import IngestionJob
 from app.domain.knowledge_bases import KnowledgeBase
 from app.domain.retrieval import RetrievalResult
-from app.infrastructure.indexes.bm25 import BM25Index
-from app.infrastructure.persistence.ingestion_jobs import SQLiteIngestionJobRepository
-from app.infrastructure.persistence.knowledge_bases import SQLiteKnowledgeBaseRepository
-from app.infrastructure.vectorstores.chroma import ChromaVectorStore
+from app.infrastructure.indexes.postgres import PostgresKeywordIndex
+from app.infrastructure.persistence.ingestion_jobs import PostgresIngestionJobRepository
+from app.infrastructure.persistence.knowledge_bases import PostgresKnowledgeBaseRepository
+from app.infrastructure.vectorstores.postgres import PostgresVectorStore
 from tests.test_retriever import FakeQueryEmbedder
 
 
@@ -31,12 +32,12 @@ FILLER = UUID("33333333-3333-4333-8333-333333333333")
 def _setup(
     tmp_path: Path,
 ) -> tuple[
-    ChromaVectorStore, BM25Index, SQLiteIngestionJobRepository, IngestionJob,
+    PostgresVectorStore, PostgresKeywordIndex, PostgresIngestionJobRepository, IngestionJob,
 ]:
-    path = tmp_path / "catalog.sqlite3"
-    catalog = SQLiteKnowledgeBaseRepository(path)
+    path = tmp_path / "catalog.db"
+    catalog = PostgresKnowledgeBaseRepository(pg_database(path))
     catalog.create(KnowledgeBase(id="ops", name="运维"))
-    jobs = SQLiteIngestionJobRepository(path)
+    jobs = PostgresIngestionJobRepository(pg_database(path))
     queued = jobs.enqueue(IngestionJobSubmission(
         job_id=f"job_{uuid4().hex}", doc_id=PENDING, kb_id="ops",
         filename="private.md", size_bytes=10, uploaded_by=uuid4(),
@@ -67,9 +68,9 @@ def _setup(
         text="needle needle needle", chunk_index=0, page=None, kb_id="dev",
     ))
     vectors.append([1.0, 0.0])
-    store = ChromaVectorStore(tmp_path / "chroma", "publication_test")
+    store = PostgresVectorStore(pg_database(tmp_path / "chroma"), "publication_test")
     store.add_chunks(chunks, vectors)
-    index = BM25Index()
+    index = PostgresKeywordIndex(store.database, store.collection_name)
     index.rebuild(chunks)
     return store, index, jobs, queued
 
@@ -134,7 +135,7 @@ def test_all_strategies_obey_live_persisted_publication(
     claim = jobs.claim_next(lease_seconds=30)
     assert claim is not None
     jobs.fail(claim, code="indexing_failed")
-    reopened = SQLiteIngestionJobRepository(tmp_path / "catalog.sqlite3")
+    reopened = PostgresIngestionJobRepository(pg_database(tmp_path / "catalog.db"))
     service = RetrievalService(
         VectorRetriever(store, FakeQueryEmbedder()), index, Reranker(),
         publication=reopened,

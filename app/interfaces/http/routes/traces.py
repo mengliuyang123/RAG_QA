@@ -14,6 +14,7 @@ from pydantic import AwareDatetime
 from pydantic import ConfigDict
 from pydantic import Field
 
+from app.interfaces.http.container_runtime import current_container
 from app.application.tracing.queries import TraceQueryService
 from app.domain.auth import User
 from app.domain.trace_queries import TraceDetail
@@ -52,7 +53,7 @@ def get_trace_queries(request: Request) -> TraceQueryService:
     Returns:
         同一运行的只读查询服务。
     """
-    return request.app.state.container.trace_query_service
+    return current_container(request).trace_query_service
 
 
 @router.get("", response_model=TracePage)

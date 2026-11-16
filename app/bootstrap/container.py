@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from enum import Enum
 from hashlib import sha256
 from pathlib import Path
+from contextlib import contextmanager
+from time import perf_counter
 from threading import Condition
 from threading import get_ident
 from threading import RLock
@@ -33,6 +35,7 @@ from app.application.conversations.service import ConversationService
 from app.application.conversations.history_window import HistoryWindowBuilder
 from app.application.ingestion.pipeline import IngestionPipeline
 from app.application.ingestion.service import UploadService
+from app.infrastructure.persistence.documents import PostgresDocumentRegistry
 from app.application.ingestion.jobs import IngestionJobService
 from app.application.ingestion.job_pipeline import JobIngestionPipeline
 from app.application.ingestion.job_runner import IngestionJobRunner
@@ -88,6 +91,7 @@ from app.bootstrap.factories import ConversationCheckpointAdapter
 from app.bootstrap.factories import KnowledgeReadRegistry
 from app.bootstrap.factories import VectorStoreAdapter
 from app.config import Settings
+from app.infrastructure.persistence.database import Database
 
 
 @runtime_checkable
@@ -122,29 +126,21 @@ class RuntimeOptions:
     """定义单次运行可覆盖的隔离存储和生成选项。
 
     Attributes:
-        chroma_path: 可选 Chroma 持久化目录覆盖。
+        artifacts_path: 隔离运行的文件产物目录。
         collection_name: 可选 collection 名称覆盖。
         collection_metadata: 创建 collection 时写入的可选元数据。
         rebuild_collection: 是否重建当前精确 collection。
         llm_temperature: 可选语言模型生成温度覆盖。
-        knowledge_base_db_path: 可选的独立知识库目录路径。
-        conversation_db_path: 可选正式会话路径；评估默认随Chroma隔离。
-        agent_checkpoint_db_path: 可选图状态路径；评估默认随Chroma隔离。
-        trace_db_path: 可选追踪路径；评估默认随Chroma隔离。
-        auth_db_path: 可选认证路径；隔离运行不得读取生产账号。
         evaluation_results_path: 可选发布报告目录，隔离运行默认不读生产报告。
     """
 
-    chroma_path: Path | None = None
+    database: Database | None = None
+    database_schema: str | None = None
+    artifacts_path: Path | None = None
     collection_name: str | None = None
     collection_metadata: Mapping[str, str | int] | None = None
     rebuild_collection: bool = False
     llm_temperature: float | None = None
-    knowledge_base_db_path: Path | None = None
-    conversation_db_path: Path | None = None
-    agent_checkpoint_db_path: Path | None = None
-    trace_db_path: Path | None = None
-    auth_db_path: Path | None = None
     evaluation_results_path: Path | None = None
 
 
@@ -180,6 +176,7 @@ class ApplicationContainer:
         Returns:
             None。
         """
+        self._database_slot: _LazySlot[Database] = _LazySlot()
         self._settings = settings
         self._runtime_options = runtime_options
         self._factories = factories
@@ -235,6 +232,7 @@ class ApplicationContainer:
         ] = _LazySlot()
         self._ingestion_sources_slot: _LazySlot[IngestionSources] = _LazySlot()
         self._ingestion_job_service_slot: _LazySlot[IngestionJobService] = _LazySlot()
+        self._document_registry_slot: _LazySlot[PostgresDocumentRegistry] = _LazySlot()
         self._job_ingestion_pipeline_slot: _LazySlot[JobIngestionPipeline] = _LazySlot()
         self._ingestion_job_runner_slot: _LazySlot[IngestionJobRunner] = _LazySlot()
         self._ingestion_worker_slot: _LazySlot[IngestionWorker] = _LazySlot()
@@ -325,7 +323,7 @@ class ApplicationContainer:
     def _create_knowledge_deletion_service(self) -> KnowledgeBaseDeletionService:
         catalog = self.knowledge_base_repository
         jobs = self.ingestion_job_repository
-        path = self._knowledge_database_path()
+        path = self.database
         return KnowledgeBaseDeletionService(
             catalog, self.vector_store, jobs,
             self._factories.knowledge_deletion_repository(path),
@@ -351,7 +349,7 @@ class ApplicationContainer:
         )
 
     def _create_knowledge_base_repository(self) -> KnowledgeBaseRepository:
-        return self._factories.knowledge_base_repository(self._knowledge_database_path())
+        return self._factories.knowledge_base_repository(self.database)
 
     @property
     def knowledge_read_registry(self) -> KnowledgeReadRegistry:
@@ -368,7 +366,7 @@ class ApplicationContainer:
     def _create_knowledge_read_registry(self) -> KnowledgeReadRegistry:
         # 预设的外键依赖既有目录表；同一路径派生规则也必须用于评估。
         self.knowledge_base_repository
-        return self._factories.knowledge_read_registry(self._knowledge_database_path())
+        return self._factories.knowledge_read_registry(self.database)
 
     @property
     def ingestion_job_repository(self) -> IngestionJobRepository:
@@ -387,7 +385,19 @@ class ApplicationContainer:
         # 任务外键必须引用本runtime已初始化的目录，而非生产目录。
         self.knowledge_base_repository
         return self._factories.ingestion_job_repository(
-            self._knowledge_database_path(),
+            self.database,
+        )
+
+    @property
+    def document_registry(self) -> PostgresDocumentRegistry:
+        """documents 登记：上传查重、替换与按 doc_id 删除。
+
+        Returns:
+            共享同一业务数据库的登记仓储。
+        """
+        return self._get_or_create(
+            self._document_registry_slot,
+            lambda: PostgresDocumentRegistry(self.database), owned_adapter=False,
         )
 
     @property
@@ -433,17 +443,13 @@ class ApplicationContainer:
         )
 
     def _create_ingestion_job_runner(self) -> IngestionJobRunner:
-        chroma_path = self._runtime_options.chroma_path or self._settings.chroma_path
-        collection = self._runtime_options.collection_name or self._settings.collection_name
-        runtime_id = sha256(collection.encode()).hexdigest()[:16]
-        guard = self._factories.ingestion_execution_guard(
-            chroma_path.resolve() / ".ingestion-locks" / f"{runtime_id}.lock",
-        )
+        guard = self._factories.ingestion_execution_guard(self.database)
         return IngestionJobRunner(
             self.ingestion_job_repository, self.ingestion_sources,
             lambda: self.job_ingestion_pipeline,
             lambda: self.ingestion_pipeline, guard,
             mutation_lock=self._document_mutation_lock,
+            on_published=lambda doc_id: self.document_service.remove_replaced_source(doc_id),
         )
 
     @property
@@ -465,11 +471,11 @@ class ApplicationContainer:
         )
 
     def _job_sources_path(self) -> Path:
-        if self._runtime_options.chroma_path is None:
+        if self._runtime_options.artifacts_path is None:
             return self._settings.docs_path
         collection = self._runtime_options.collection_name or self._settings.collection_name
         runtime_id = sha256(collection.encode()).hexdigest()[:16]
-        return self._runtime_options.chroma_path / "sources" / runtime_id
+        return self._runtime_options.artifacts_path / "sources" / runtime_id
 
     @property
     def ingestion_worker(self) -> IngestionWorker:
@@ -482,7 +488,7 @@ class ApplicationContainer:
             self._ingestion_worker_slot,
             lambda: IngestionWorker(
                 lambda: self._factories.ingestion_pending_probe(
-                    self._knowledge_database_path(),
+                    self.database,
                 ),
                 lambda: self.ingestion_job_runner, self._ingestion_stop,
                 poll_seconds=self._settings.ingestion_poll_seconds,
@@ -512,25 +518,12 @@ class ApplicationContainer:
                 max_active=self._settings.question_max_active,
                 max_waiting=self._settings.question_max_waiting,
                 queue_timeout_seconds=self._settings.question_queue_timeout_seconds,
+                # 与 TraceService 共用高精度时钟，避免 Windows 3.11 的
+                # monotonic 计时粒度使排队耗时反而大于完整请求耗时。
+                clock=perf_counter,
             ), owned_adapter=False,
         )
 
-    def _knowledge_database_path(self) -> Path:
-        selected_path = self._runtime_options.knowledge_base_db_path
-        if selected_path is None and self._runtime_options.chroma_path is not None:
-            collection_name = (
-                self._runtime_options.collection_name
-                or self._settings.collection_name
-            )
-            # 评估的collection名只作为隔离标识，不可直接参与文件系统路径。
-            catalog_id = sha256(collection_name.encode("utf-8")).hexdigest()[:16]
-            selected_path = (
-                self._runtime_options.chroma_path
-                / "catalogs" / f"{catalog_id}.sqlite3"
-            )
-        if selected_path is None:
-            selected_path = self._settings.knowledge_base_db_path
-        return selected_path
 
     @property
     def trace_repository(self) -> TraceRepository:
@@ -541,10 +534,7 @@ class ApplicationContainer:
         """
         return self._get_or_create(
             self._trace_repository_slot,
-            lambda: self._factories.trace_repository(self._runtime_database_path(
-                "traces", self._runtime_options.trace_db_path,
-                self._settings.trace_db_path,
-            )),
+            lambda: self._factories.trace_repository(self.database),
             owned_adapter=False,
         )
 
@@ -639,10 +629,7 @@ class ApplicationContainer:
             self._get_conversation_repository()
         except (ConversationStorageError, OSError) as error:
             raise InsightStorageError("拒答洞察存储不可用") from error
-        path = self._runtime_database_path(
-            "conversations", self._runtime_options.conversation_db_path,
-            self._settings.conversation_db_path,
-        )
+        path = self.database
         return RefusalInsightService(
             self._factories.refusal_reader(path), self.admin_audit,
         )
@@ -664,10 +651,7 @@ class ApplicationContainer:
             self._get_conversation_repository()
         except (ConversationStorageError, OSError) as error:
             raise InsightStorageError("拒答聚类存储不可用") from error
-        path = self._runtime_database_path(
-            "conversations", self._runtime_options.conversation_db_path,
-            self._settings.conversation_db_path,
-        )
+        path = self.database
         return RefusalClusterService(
             self._factories.refusal_reader(path), self.admin_audit,
             DeferredEmbeddingProvider(lambda: self.embedding_provider),
@@ -692,10 +676,7 @@ class ApplicationContainer:
             self._get_conversation_repository()
         except (ConversationStorageError, OSError) as error:
             raise InsightStorageError("概览统计存储不可用") from error
-        path = self._runtime_database_path(
-            "conversations", self._runtime_options.conversation_db_path,
-            self._settings.conversation_db_path,
-        )
+        path = self.database
         return InsightOverviewService(
             self._factories.insight_metric_reader(path),
             self.knowledge_base_repository, self.admin_audit,
@@ -706,10 +687,7 @@ class ApplicationContainer:
             self._get_conversation_repository()
         except (ConversationStorageError, OSError) as error:
             raise InsightStorageError("后台反馈存储不可用") from error
-        path = self._runtime_database_path(
-            "conversations", self._runtime_options.conversation_db_path,
-            self._settings.conversation_db_path,
-        )
+        path = self.database
         return FeedbackAdminService(self._factories.feedback_admin_repository(path), self.admin_audit)
 
     @property
@@ -729,10 +707,7 @@ class ApplicationContainer:
             self._get_conversation_repository()
         except (ConversationStorageError, OSError) as error:
             raise ShareStorageError("分享存储暂时不可用") from error
-        path = self._runtime_database_path(
-            "conversations", self._runtime_options.conversation_db_path,
-            self._settings.conversation_db_path,
-        )
+        path = self.database
         return ShareService(self._factories.share_repository(path))
 
     @property
@@ -751,14 +726,14 @@ class ApplicationContainer:
         path = self._runtime_options.evaluation_results_path
         if path is None:
             path = self._settings.evaluation_results_path
-            if self._runtime_options.chroma_path is not None:
+            if self._runtime_options.artifacts_path is not None:
                 collection = (
                     self._runtime_options.collection_name
                     or self._settings.collection_name
                 )
                 runtime_id = sha256(collection.encode()).hexdigest()[:16]
                 path = (
-                    self._runtime_options.chroma_path / "runtimes"
+                    self._runtime_options.artifacts_path / "runtimes"
                     / runtime_id / "evaluation-results"
                 )
         return EvaluationReportService(
@@ -773,14 +748,8 @@ class ApplicationContainer:
         except (ConversationStorageError, OSError) as error:
             raise TraceStorageError("追踪关联存储不可用") from error
         return self._factories.trace_reader(
-            self._runtime_database_path(
-                "traces", self._runtime_options.trace_db_path,
-                self._settings.trace_db_path,
-            ),
-            self._runtime_database_path(
-                "conversations", self._runtime_options.conversation_db_path,
-                self._settings.conversation_db_path,
-            ),
+            self.database,
+            self.database,
         )
 
     @property
@@ -810,10 +779,7 @@ class ApplicationContainer:
         return self._get_or_create(
             self._auth_service_slot,
             lambda: AuthService(
-                self._factories.auth_repository(self._runtime_database_path(
-                    "auth", self._runtime_options.auth_db_path,
-                    self._settings.auth_db_path,
-                )),
+                self._factories.auth_repository(self.database),
                 self._factories.password_hasher(),
                 session_seconds=self._settings.auth_session_seconds,
                 idle_seconds=self._settings.auth_idle_seconds,
@@ -844,16 +810,6 @@ class ApplicationContainer:
             owned_adapter=False,
         )
 
-    def _runtime_database_path(
-        self, name: str, override: Path | None, configured: Path,
-    ) -> Path:
-        if override is not None:
-            return override
-        if self._runtime_options.chroma_path is None:
-            return configured
-        collection = self._runtime_options.collection_name or self._settings.collection_name
-        runtime_id = sha256(collection.encode()).hexdigest()[:16]
-        return self._runtime_options.chroma_path / "runtimes" / runtime_id / f"{name}.sqlite3"
 
     @property
     def vector_store(self) -> VectorStoreAdapter:
@@ -992,7 +948,7 @@ class ApplicationContainer:
             BaseException: 所有 adapter 尝试关闭后重新抛出的首个
                 关闭异常。
         """
-        # 先发停止信号并等执行退出，再关闭其仍在使用的模型／SQLite适配器。
+        # 先发停止信号并等执行退出，再关闭其仍在使用的模型与数据库适配器。
         # 共享信号也防止close与后台组件构造并发时启动一个游离线程。
         self._ingestion_stop.set()
         with self._lazy_condition:
@@ -1028,16 +984,31 @@ class ApplicationContainer:
         if first_error is not None:
             raise first_error
 
+    @property
+    def database(self) -> Database:
+        if self._runtime_options.database is not None:
+            return self._runtime_options.database
+        schema = self._runtime_options.database_schema or self._settings.database_schema
+        if self._runtime_options.database_schema is None and self._runtime_options.artifacts_path is not None:
+            identity = str(self._runtime_options.artifacts_path.resolve()) + ':' + (self._runtime_options.collection_name or self._settings.collection_name)
+            schema = schema[:40] + '_run_' + sha256(identity.encode()).hexdigest()[:12]
+        return self._get_or_create(self._database_slot, lambda: Database(
+            self._settings.database_url,
+            schema,
+        ), owned_adapter=True)
+
+    @contextmanager
+    def hold_index_initialization(self):
+        collection = self._runtime_options.collection_name or self._settings.collection_name
+        with self.database.connection() as connection:
+            connection.execute('SELECT pg_advisory_xact_lock(hashtextextended(%s,0))',
+                               (self.database.schema + ':index:' + collection,))
+            yield
+
     def _create_vector_store(self) -> VectorStoreAdapter:
-        chroma_path = self._runtime_options.chroma_path
-        if chroma_path is None:
-            chroma_path = self._settings.chroma_path
-        collection_name = self._runtime_options.collection_name
-        if collection_name is None:
-            collection_name = self._settings.collection_name
         return self._factories.vector_store(
-            chroma_path,
-            collection_name,
+            self.database,
+            self._runtime_options.collection_name or self._settings.collection_name,
             self._runtime_options.collection_metadata,
             self._runtime_options.rebuild_collection,
         )
@@ -1094,10 +1065,7 @@ class ApplicationContainer:
             self._get_conversation_repository()
         except (ConversationStorageError, OSError) as error:
             raise KnowledgeContentError("正式引用统计暂时不可用") from error
-        path = self._runtime_database_path(
-            "conversations", self._runtime_options.conversation_db_path,
-            self._settings.conversation_db_path,
-        )
+        path = self.database
         return CitationStatisticsService(self._factories.document_citation_reader(path))
 
     @property
@@ -1125,10 +1093,12 @@ class ApplicationContainer:
             mutation_lock=self._document_mutation_lock,
             deletion_registry=self.knowledge_read_registry,
             jobs=self.ingestion_job_repository,
+            registry=self.document_registry,
             listing=AdminDocumentListing(
                 self._job_sources_path(), self.vector_store,
                 self.ingestion_job_repository, self._document_mutation_lock,
                 statistics=lambda: self.citation_statistics,
+                registry=self.document_registry,
             ),
         )
 
@@ -1309,10 +1279,7 @@ class ApplicationContainer:
         return self._get_or_create(
             self._conversation_repository_slot,
             lambda: self._factories.conversation_repository(
-                self._runtime_database_path(
-                    "conversations", self._runtime_options.conversation_db_path,
-                    self._settings.conversation_db_path,
-                ),
+                self.database,
             ),
             owned_adapter=False,
         )
@@ -1323,10 +1290,7 @@ class ApplicationContainer:
         return self._get_or_create(
             self._conversation_checkpoint_store_slot,
             lambda: self._factories.conversation_checkpoint_store(
-                self._runtime_database_path(
-                    "checkpoints", self._runtime_options.agent_checkpoint_db_path,
-                    self._settings.agent_checkpoint_db_path,
-                ),
+                self.database,
             ),
             owned_adapter=True,
         )
@@ -1368,7 +1332,7 @@ class ApplicationContainer:
 
     def _create_repair_log(self) -> RepairLogWriter:
         repair_root = self._settings.docs_path.parent
-        if self._runtime_options.chroma_path is not None:
+        if self._runtime_options.artifacts_path is not None:
             # 不同隔离collection的修复记录不能混入生产或彼此的源文件目录。
             repair_root = self._job_sources_path()
         repair_path = repair_root / "repair" / "document_deletions.jsonl"

@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 
 from pathlib import Path
@@ -164,7 +165,7 @@ def test_default_data_paths_are_absolute_project_paths() -> None:
     settings = Settings(_env_file=None)
 
     assert settings.docs_path.is_absolute()
-    assert settings.chroma_path.is_absolute()
+    assert settings.artifacts_path.is_absolute()
     assert settings.docs_path == Path(__file__).parents[1] / "data" / "docs"
 
 
@@ -172,13 +173,8 @@ def test_default_conversation_configuration_is_local_and_bounded() -> None:
     """会话历史、Agent 上限和两个 SQLite 路径应有安全默认值。"""
     settings = Settings(_env_file=None)
 
-    assert settings.conversation_db_path == (
-        Path(__file__).parents[1]
-        / "data"
-        / "conversations"
-        / "conversations.sqlite3"
-    )
-    assert settings.agent_checkpoint_db_path.name == "checkpoints.sqlite3"
+    assert settings.database_schema == 'rag_qa'
+    assert settings.evaluation_database_schema != settings.database_schema
     assert settings.conversation_history_turns == 6
     assert settings.agent_max_retrieval_calls == 3
     assert settings.agent_temperature == 0.0
@@ -212,8 +208,8 @@ def test_default_evaluation_configuration_is_isolated() -> None:
     """默认评估目录必须与生产目录分离并使用固定随机参数。"""
     settings = Settings(_env_file=None)
 
-    assert settings.evaluation_chroma_path.is_absolute()
-    assert settings.evaluation_chroma_path != settings.chroma_path
+    assert settings.evaluation_artifacts_path.is_absolute()
+    assert settings.evaluation_artifacts_path != settings.artifacts_path
     assert settings.evaluation_collection_prefix == "rag_eval"
     assert settings.evaluation_random_seed == 20260820
     assert settings.evaluation_local_temperature == 0.0
@@ -238,15 +234,16 @@ def test_evaluation_validation_rejects_production_chroma_path(
     """评估路径解析后与生产路径相同时必须在远程调用前失败。"""
     database_path = tmp_path / "shared"
     settings = Settings(
-        chroma_path=database_path,
-        evaluation_chroma_path=database_path / ".",
+        artifacts_path=database_path,
+        evaluation_artifacts_path=database_path / '.',
+        database_schema='shared', evaluation_database_schema='shared',
         evaluation_judge_api_key="judge-key",
         evaluation_judge_base_url="https://judge.example/v1",
         evaluation_judge_model="judge-model",
         _env_file=None,
     )
 
-    with pytest.raises(ValueError, match="评估 Chroma 路径必须与生产路径隔离"):
+    with pytest.raises(ValueError, match="评估 PostgreSQL schema 必须与生产 schema 隔离"):
         settings.validate_evaluation_settings()
 
 

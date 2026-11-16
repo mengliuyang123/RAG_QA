@@ -9,6 +9,7 @@ from fastapi import Query
 from fastapi import Request
 from fastapi import Response
 
+from app.interfaces.http.container_runtime import current_container
 from app.application.tracing.usage import UsageQueryService
 from app.domain.auth import User
 from app.domain.usage import UsageGroup
@@ -28,7 +29,7 @@ def get_usage_service(request: Request) -> UsageQueryService:
     Returns:
         与追踪列表共享数据源的用量服务。
     """
-    return request.app.state.container.usage_query_service
+    return current_container(request).usage_query_service
 
 
 @router.get("", response_model=UsageReport)

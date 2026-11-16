@@ -1,4 +1,4 @@
-import { normalizeDocument, normalizeTurn } from "./adapters";
+import { normalizeDocument, normalizeToolCall, normalizeTurn } from "./adapters";
 import {
   MOCK_DOCUMENTS,
   MOCK_INSIGHTS,
@@ -10,6 +10,7 @@ import {
 import type {
   Api,
   Citation,
+  ExistingDocument,
   ChunkContext,
   Conversation,
   ConversationSummary,
@@ -17,6 +18,7 @@ import type {
   KbDocument,
   KbScope,
   KnowledgeBase,
+  ModelSettings,
   StreamHandlers,
   Turn,
   User,
@@ -31,6 +33,30 @@ export class ApiError extends Error {
     this.status = status;
     this.code = code;
   }
+}
+
+/** 同名不同内容：前端据此弹出"替换 / 另存为一篇"选择框。 */
+export class UploadConflictError extends ApiError {
+  readonly existing: ExistingDocument;
+
+  constructor(message: string, existing: ExistingDocument) {
+    super(409, message, "document_name_conflict");
+    this.existing = existing;
+  }
+}
+
+function toExisting(doc: MockDocument): ExistingDocument {
+  return { docId: doc.docId, kbId: doc.kbId, filename: doc.filename, status: "ready", uploadedAt: doc.updatedAt };
+}
+
+async function readText(file: File): Promise<string> {
+  if (typeof file.text === "function") return file.text();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsText(file);
+  });
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -56,6 +82,58 @@ type RawTurn = Record<string, unknown>;
 interface Scenario {
   statuses: Record<string, unknown>[];
   turn: RawTurn;
+  /** 接口约定 v1 的 data_blocks（二期）。 */
+  dataBlocks?: Record<string, unknown>[];
+  /** 演示检索失败：第几次检索返回 error 终态（从 1 开始）。 */
+  failAttempt?: number;
+}
+
+const RETRIEVAL_PHASES = new Set(["retrieving", "expanding"]);
+
+// 按接口约定 v1 把场景里的检索阶段转成 retrieve_knowledge 调用：
+// 首次为 initial，expanding 为 expand_scope，escalating 之后的检索为 escalate。
+// 命中片段取自对应知识库的演示文档，被正式引用的分块标记 used。
+export function mockToolCalls(question: string, scenario: Scenario): Record<string, unknown>[] {
+  const citations = (scenario.turn.citations as { doc_id: string; chunk_id: string }[] | undefined) ?? [];
+  const used = new Set(citations.map((item) => item.chunk_id));
+  const calls: Record<string, unknown>[] = [];
+  let escalated = false;
+  let attempt = 0;
+  for (const status of scenario.statuses) {
+    if (status.phase === "escalating") escalated = true;
+    if (!RETRIEVAL_PHASES.has(String(status.phase))) continue;
+    attempt += 1;
+    const kbIds = Array.isArray(status.kb_ids) ? (status.kb_ids as string[]) : [];
+    const label = typeof status.label === "string" ? status.label.replace(/^正在补充查找[:：]s*/, "") : null;
+    const reason = status.phase === "expanding" ? "expand_scope" : escalated && attempt > 1 ? "escalate" : "initial";
+    const args = { query: label ?? question, kb_ids: kbIds, attempt, reason };
+    const id = `tc_${String(attempt).padStart(2, "0")}`;
+    if (scenario.failAttempt === attempt) {
+      calls.push({ tool_call_id: id, tool_name: "retrieve_knowledge", status: "error", args,
+        error: { code: "retrieval_failed", message: "检索服务暂时不可用" } });
+      continue;
+    }
+    const hits = MOCK_DOCUMENTS
+      .filter((doc) => kbIds.length === 0 || kbIds.includes(doc.kbId))
+      .flatMap((doc) => doc.chunks.map((chunk, index) => ({ doc, chunk, index })))
+      // 被引用的分块排在前面，模拟真实检索里高分片段被采用。
+      .sort((x, y) => Number(used.has(`${y.doc.docId}:${y.index}`)) - Number(used.has(`${x.doc.docId}:${x.index}`)))
+      .slice(0, 4)
+      .map(({ doc, chunk, index }, order) => {
+        const chunkId = `${doc.docId}:${index}`;
+        return {
+          doc_id: doc.docId, chunk_id: chunkId, kb_id: doc.kbId, filename: doc.filename,
+          page: chunk.page, score: Number((0.86 - order * 0.07).toFixed(2)),
+          snippet: chunk.text.slice(0, 200), used: used.has(chunkId),
+        };
+      });
+    const relevant = hits.filter((hit) => hit.used).length || Math.min(1, hits.length);
+    calls.push({
+      tool_call_id: id, tool_name: "retrieve_knowledge", status: "complete", args,
+      result: { retrieved: hits.length * 2, relevant, hits },
+    });
+  }
+  return calls;
 }
 
 function cite(doc: MockDocument, chunkIndex: number, position: number) {
@@ -114,6 +192,25 @@ export function pickScenario(question: string, scope: KbScope): Scenario {
           options: ["checkpoint 存储配置", "检索策略配置", "部署环境配置"],
         },
         kb_scope: { mode: scope.mode, requested: scope.kbIds, searched: [] },
+      },
+    };
+  }
+
+  if (/检索失败|故障演练/.test(question)) {
+    return {
+      statuses: [{ phase: "understanding" }, { phase: "retrieving", attempt: 1, kb_ids: searched(["dev"]) }, { phase: "verifying" }],
+      failAttempt: 1,
+      turn: {
+        ...base,
+        answer: "根据现有知识库，我无法可靠回答这个问题",
+        outcome: "refused",
+        grounding: "ungrounded",
+        lane: "fast",
+        retrieval_calls: 1,
+        citations: [],
+        evidence_stats: { used: 0, excluded: 0, retrieved: 0, relevant: 0 },
+        refusal: { reason: "no_evidence", found_summary: null, missing: [], suggested_kb_id: null },
+        kb_scope: { mode: scope.mode, requested: scope.kbIds, searched: searched(["dev"]) },
       },
     };
   }
@@ -229,6 +326,16 @@ export function pickScenario(question: string, scope: KbScope): Scenario {
         evidence_stats: { used: 2, excluded: 3, retrieved: 5, relevant: 2 },
         kb_scope: { mode: scope.mode, requested: scope.kbIds, searched: searched(["product"]) },
       },
+      dataBlocks: [{
+        data_id: "d_01",
+        type: "table",
+        data: {
+          caption: "0.2 版本更新一览",
+          columns: ["版本", "更新内容", "涉及页面"],
+          rows: [["0.2", "多轮会话与可点击的引用来源", "对话页"], ["0.2", "文档管理：查看入库状态、删除文档", "知识库管理"]],
+          source_positions: [1, 2],
+        },
+      }],
     };
   }
 
@@ -388,6 +495,8 @@ export function createMockApi(): Api {
       const started = performance.now();
       try {
         const scenario = pickScenario(question, scope);
+        const toolCalls = mockToolCalls(question, scenario);
+        let attempt = 0;
         for (const status of scenario.statuses) {
           handlers.onStatus({
             phase: String(status.phase),
@@ -396,11 +505,24 @@ export function createMockApi(): Api {
             label: typeof status.label === "string" ? status.label : null,
             queuePosition: null,
           });
-          await sleep(550, signal);
+          // 检索阶段同时按约定推送 tool 事件：先 running，再唯一终态，全部在第一个 token 之前。
+          const call = RETRIEVAL_PHASES.has(String(status.phase)) ? toolCalls[attempt++] : undefined;
+          if (call) {
+            const running = normalizeToolCall({ ...call, status: "running", result: undefined, error: undefined });
+            if (running) handlers.onTool(running);
+            await sleep(900, signal);
+            const final = normalizeToolCall(call);
+            if (final) handlers.onTool(final);
+            await sleep(250, signal);
+          } else {
+            await sleep(550, signal);
+          }
         }
         const turn = normalizeTurn(
           {
             ...scenario.turn,
+            tool_calls: toolCalls,
+            data_blocks: scenario.dataBlocks ?? [],
             turn_id: uuid(),
             conversation_id: conversationId,
             latency_ms: Math.round(performance.now() - started),
@@ -413,6 +535,7 @@ export function createMockApi(): Api {
           handlers.onToken(turn.answer.slice(offset, offset + 6));
           await sleep(25, signal);
         }
+        for (const block of turn.dataBlocks) handlers.onData(block);
         conversation.turns.push(turn);
         conversation.updatedAt = turn.createdAt;
         if (conversation.turns.length === 1) conversation.title = question.slice(0, 50);
@@ -460,7 +583,17 @@ export function createMockApi(): Api {
         return documents.filter((doc) => !kbId || doc.kbId === kbId).map(toDocument);
       },
 
-      async uploadDocument(kbId, file, onProgress) {
+      async uploadDocument(kbId, file, onProgress, options = {}) {
+        const content = await readText(file);
+        const live = documents.filter((doc) => doc.kbId === kbId);
+        const same = live.find((doc) => doc.content !== undefined && doc.content === content);
+        if (same) return { kind: "exists", existing: toExisting(same) };
+        const named = options.replaceDocId
+          ? live.find((doc) => doc.docId === options.replaceDocId)
+          : live.find((doc) => doc.filename === file.name);
+        if (named && !options.onConflict) {
+          throw new UploadConflictError("知识库中已有同名文档，请选择替换或另存为一篇", toExisting(named));
+        }
         const stages = ["uploading", "parsing", "chunking", "embedding", "indexing"] as const;
         for (const stage of stages) {
           if (stage === "embedding") {
@@ -480,10 +613,15 @@ export function createMockApi(): Api {
           updatedAt: new Date().toISOString(),
           fileStatus: "available",
           chunks: [{ text: `${file.name} 的示例内容。`, page: null }],
+          content,
         };
         documents.unshift(doc);
+        // 新版本入库完成后才移除旧版本，与后端替换语义一致。
+        if (named && options.onConflict === "replace") {
+          documents.splice(documents.indexOf(named), 1);
+        }
         onProgress({ stage: "done", progress: 1 });
-        return toDocument(doc);
+        return { kind: "uploaded", document: toDocument(doc) };
       },
 
       async deleteDocument(docId) {
@@ -491,6 +629,22 @@ export function createMockApi(): Api {
         const index = documents.findIndex((doc) => doc.docId === docId);
         if (index === -1) throw new ApiError(404, "文档不存在", "not_found");
         documents.splice(index, 1);
+      },
+
+      async deleteDocuments(docIds) {
+        await sleep(150);
+        const deleted: string[] = [];
+        const notFound: string[] = [];
+        for (const docId of new Set(docIds)) {
+          const index = documents.findIndex((doc) => doc.docId === docId);
+          if (index === -1) {
+            notFound.push(docId);
+          } else {
+            documents.splice(index, 1);
+            deleted.push(docId);
+          }
+        }
+        return { deleted, notFound };
       },
 
       async createKnowledgeBase(kb) {
@@ -517,6 +671,72 @@ export function createMockApi(): Api {
         await sleep(120);
         return MOCK_REFUSALS;
       },
+
+      async getModelSettings() {
+        await sleep(120);
+        return structuredClone(modelSettings);
+      },
+
+      async updateModelSettings(values) {
+        await sleep(300);
+        const fields = new Map(modelSettings.groups.flatMap((group) => group.fields).map((field) => [field.name, field]));
+        for (const name of Object.keys(values)) {
+          if (!fields.has(name)) throw new ApiError(422, `不支持在线修改的配置项：${name}`);
+        }
+        // 与后端一致：已入库向量为 1536 维，改成其他维度会被拒绝。
+        const dimensions = values.embedding_dimensions;
+        if (dimensions !== undefined && dimensions !== null && dimensions !== "" && Number(dimensions) !== 1536) {
+          throw new ApiError(409, `新向量模型输出 ${dimensions} 维，已入库的向量是 1536 维，两者不兼容。请保持原维度，或清空知识库后重新入库。`);
+        }
+        for (const [name, value] of Object.entries(values)) {
+          const field = fields.get(name)!;
+          field.value = value === null || value === "" ? field.defaultValue : field.kind === "int" ? Number(value) : value;
+        }
+        return structuredClone(modelSettings);
+      },
     },
   };
 }
+
+const field = (
+  name: string, label: string, kind: "secret" | "url" | "text" | "int",
+  value: string | number | null, defaultValue: string | number | null = null, hint = "",
+) => ({ name, envKey: name.toUpperCase(), label, kind, hint, value, defaultValue, overriddenByEnvironment: false });
+
+const INHERIT = "留空时沿用生成模型的配置";
+
+// 演示数据：结构与后端 GET /api/admin/settings/models 一致，Key 为假值。
+const modelSettings: ModelSettings = {
+  storedEmbeddingDimensions: 1536,
+  groups: [
+    { id: "llm", title: "生成模型", description: "Agent 规划、检索决策和最终回答使用的主模型。", fields: [
+      field("llm_api_key", "API Key", "secret", "sk-demo-llm-key", null, "留空且地址为 OpenAI 官方时，使用下方的 OpenAI 通用 Key"),
+      field("llm_base_url", "API 地址", "url", "https://api.openai.com/v1", "https://api.openai.com/v1", "OpenAI 兼容接口的根地址"),
+      field("llm_model", "模型名", "text", "gpt-4o-mini", "gpt-4o-mini"),
+    ] },
+    { id: "understanding", title: "问题理解模型", description: "改写问题、判断走哪条处理通道。可以单独配一个更快更便宜的模型。", fields: [
+      field("understanding_api_key", "API Key", "secret", null, null, INHERIT),
+      field("understanding_base_url", "API 地址", "url", null, null, INHERIT),
+      field("understanding_model", "模型名", "text", null, null, INHERIT),
+    ] },
+    { id: "judge", title: "质量审核模型", description: "判断检索证据是否充分、审核回答质量。", fields: [
+      field("judge_api_key", "API Key", "secret", null, null, INHERIT),
+      field("judge_base_url", "API 地址", "url", null, null, INHERIT),
+      field("judge_model", "模型名", "text", null, null, INHERIT),
+    ] },
+    { id: "embedding", title: "向量模型", description: "文档入库和提问检索时把文本转成向量。更换模型或维度后，已有向量不再兼容。", fields: [
+      field("embedding_api_key", "API Key", "secret", "sk-demo-embed-key", null, "留空且地址为 OpenAI 官方时，使用下方的 OpenAI 通用 Key"),
+      field("embedding_base_url", "API 地址", "url", "https://api.openai.com/v1", "https://api.openai.com/v1"),
+      field("embedding_model", "模型名", "text", "text-embedding-3-small", "text-embedding-3-small"),
+      field("embedding_dimensions", "向量维度", "int", null, null, "留空使用模型默认维度；只有支持 dimensions 参数的模型（如 text-embedding-3）才能指定"),
+    ] },
+    { id: "reranker", title: "重排序模型", description: "hybrid_rerank 策略下对召回结果精排。", fields: [
+      field("reranker_api_key", "API Key", "secret", null, null, "不配置时不启用重排序"),
+      field("reranker_base_url", "API 地址", "url", null),
+      field("reranker_model", "模型名", "text", "qwen3-rerank", "qwen3-rerank"),
+    ] },
+    { id: "shared", title: "OpenAI 通用 Key", description: "各模型地址为 OpenAI 官方且没有单独配置 Key 时使用。", fields: [
+      field("openai_api_key", "API Key", "secret", null),
+    ] },
+  ],
+};

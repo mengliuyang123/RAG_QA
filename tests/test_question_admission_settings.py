@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """保护同步入口的线程池余量，配置与追踪指纹应反映实际准入策略。"""
 
@@ -24,6 +25,6 @@ def test_admission_policy_changes_trace_configuration_version(tmp_path: Path) ->
     Args:
         tmp_path: 隔离追踪目录。
     """
-    first = _version(tmp_path / "first.sqlite3")
-    changed = _version(tmp_path / "second.sqlite3", question_max_active=2)
+    first = _version(tmp_path / "first.db")
+    changed = _version(tmp_path / "second.db", question_max_active=2)
     assert first != changed

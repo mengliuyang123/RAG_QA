@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """非流式知识库问答 HTTP 接口测试。"""
 
@@ -25,6 +26,8 @@ from app.domain.documents import DocumentChunk
 from app.domain.errors import InvalidTopKError
 from app.domain.retrieval import RetrievalStrategy
 from app.domain.retrieval import VectorSearchResult
+from app.infrastructure.vectorstores.postgres import PostgresVectorStore
+from app.infrastructure.persistence.database import Database
 from app.interfaces.http.dependencies import get_query_service
 from tests.http_auth import create_test_app as create_app
 from app.domain.conversations import KNOWLEDGE_REFUSAL_ANSWER
@@ -88,55 +91,13 @@ class FakeQueryService:
         )
 
 
-class _OfflineVectorStore:
-    """为生产查询装配返回可选的确定性候选。"""
+class _KeywordOnlyVectorStore(PostgresVectorStore):
+    """真实持久化，关闭向量召回，让候选只能来自默认 PostgreSQL 全文检索。"""
 
-    def __init__(self, chunk: DocumentChunk | None) -> None:
-        """保存测试场景中的唯一候选。
-
-        Args:
-            chunk: 需要由向量和关键词检索共同召回的候选。
-
-        Returns:
-            None。
-        """
-        self._chunk = chunk
-
-    def query_by_embedding(
-        self,
-        vector: list[float],
-        top_k: int,
-        *, kb_ids: tuple[str, ...] | None = None,
-    ) -> list[VectorSearchResult]:
-        """保持向量分支为空，使候选只能来自默认 BM25。
-
-        Args:
-            vector: 离线 embedder 生成的查询向量。
-            top_k: 向量候选上限。
-
-        Returns:
-            始终为空的向量命中列表。
-        """
-        del vector
-        del top_k
+    def query_by_embedding(self, vector: list[float], top_k: int, *,
+                           kb_ids: tuple[str, ...] | None = None,
+                           excluded_doc_ids: tuple[str, ...] = ()) -> list[VectorSearchResult]:
         return []
-
-    def list_chunks(self) -> list[DocumentChunk]:
-        """返回供默认 BM25 factory 建索引的相同候选。
-
-        Returns:
-            空列表或唯一的确定性文本块。
-        """
-        if self._chunk is None:
-            return []
-        return [self._chunk]
-
-    def close(self) -> None:
-        """提供容器可关闭的离线资源边界。
-
-        Returns:
-            None。
-        """
 
 
 class _OfflineEmbeddingProvider:
@@ -214,7 +175,7 @@ def _create_production_query_app(
     *,
     with_candidate: bool,
 ) -> FastAPI:
-    """保留默认 BM25/reranker factory 并替换外部 I/O。
+    """保留默认 PostgreSQL 全文/reranker factory，仅替换外部模型 I/O。
 
     Args:
         tmp_path: pytest 提供的临时应用目录。
@@ -233,21 +194,20 @@ def _create_production_query_app(
             page=None,
             chunk_index=0,
         )
-    vector_store = _OfflineVectorStore(chunk)
     embedding_provider = _OfflineEmbeddingProvider()
     llm_provider = _UnusedLLMProvider()
 
     def _create_vector_store(
-        path: Path,
+        database: Database,
         collection_name: str,
         collection_metadata: Mapping[str, str | int] | None,
         rebuild_collection: bool,
-    ) -> _OfflineVectorStore:
-        del path
-        del collection_name
-        del collection_metadata
-        del rebuild_collection
-        return vector_store
+    ) -> _KeywordOnlyVectorStore:
+        store = _KeywordOnlyVectorStore(database, collection_name, collection_metadata)
+        if chunk is not None:
+            store.add_chunks([chunk], [[1., 0.]])
+        return store
+
 
     def _create_embedding_provider(
         api_key: str | None,
@@ -288,12 +248,12 @@ def _create_production_query_app(
         embedding_api_key="offline",
         llm_api_key="offline",
         reranker_base_url=None,
-        chroma_path=tmp_path / "chroma",
+        artifacts_path=tmp_path / "chroma",
         docs_path=tmp_path / "docs",
-        knowledge_base_db_path=tmp_path / "catalog.sqlite3",
-        trace_db_path=tmp_path / "traces.sqlite3",
-        conversation_db_path=tmp_path / "conversations.sqlite3",
-        agent_checkpoint_db_path=tmp_path / "checkpoints.sqlite3",
+
+
+
+
     )
     container_factory = partial(
         build_application_container,

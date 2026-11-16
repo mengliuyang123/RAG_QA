@@ -9,6 +9,7 @@ from fastapi import Depends
 from fastapi import Request
 from fastapi import Response
 
+from app.interfaces.http.container_runtime import current_container
 from app.application.feedback.service import FeedbackService
 from app.domain.auth import User
 from app.domain.feedback import TurnFeedback
@@ -27,7 +28,7 @@ def get_feedback_service(request: Request) -> FeedbackService:
     Returns:
         共享反馈服务。
     """
-    return request.app.state.container.feedback_service
+    return current_container(request).feedback_service
 
 
 @router.put("/{turn_id}/feedback", status_code=204)

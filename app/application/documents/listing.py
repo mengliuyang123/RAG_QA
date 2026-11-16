@@ -15,6 +15,7 @@ from app.application.errors import DocumentStorageCorruptionError
 from app.application.errors import IngestionJobStorageError
 from app.application.errors import KnowledgeContentError
 from app.application.errors import VectorStoreError
+from app.application.ports.document_registry import DocumentRegistry
 from app.application.ports.ingestion_jobs import DocumentJobReader
 from app.application.ports.knowledge_content import KnowledgeContentReader
 from app.domain.documents import DocumentSummary
@@ -27,6 +28,7 @@ class AdminDocumentListing:
         self, docs_path: Path, content: KnowledgeContentReader,
         jobs: DocumentJobReader, mutation_lock: AbstractContextManager[object],
         statistics: Callable[[], CitationStatisticsService] | None = None,
+        registry: DocumentRegistry | None = None,
     ) -> None:
         """保存与文档维护相同的源路径、元数据与一致性锁。
 
@@ -36,6 +38,7 @@ class AdminDocumentListing:
             jobs: 批量读取管理任务资料的端口。
             mutation_lock: 与入库／删除共用的锁。
             statistics: 惰性获取当前业务库统计，空索引不触发建库。
+            registry: documents 登记；入库失败（无分块）的文档也要列出以便删除。
 
         Returns:
             None。
@@ -45,6 +48,7 @@ class AdminDocumentListing:
         self._jobs = jobs
         self._mutation_lock = mutation_lock
         self._statistics = statistics
+        self._registry = registry
 
     def list_documents(self, kb_id: str | None = None) -> list[DocumentSummary]:
         """保留旧列表和mtime排序，批量附加真实任务字段。
@@ -58,7 +62,14 @@ class AdminDocumentListing:
         with self._mutation_lock:
             try:
                 headers = self._content.list_document_headers(kb_id)
-                jobs = self._jobs.get_document_jobs(tuple(header.doc_id for header in headers))
+                indexed = {header.doc_id for header in headers}
+                failed = tuple(
+                    record for record in (self._registry.list_live(kb_id) if self._registry else ())
+                    if record.status == "failed" and record.doc_id not in indexed
+                )
+                jobs = self._jobs.get_document_jobs(
+                    tuple(header.doc_id for header in headers) + tuple(record.doc_id for record in failed),
+                )
             except (VectorStoreError, IngestionJobStorageError) as error:
                 raise KnowledgeContentError("管理文档元数据暂时不可用") from error
             totals = {}
@@ -84,6 +95,19 @@ class AdminDocumentListing:
                     published=job is None or job.status == "succeeded",
                     citations_7d=citations.total if citations is not None else None,
                     unattributed_citations_7d=citations.unattributed if citations is not None else None,
+                ))
+            for record in failed:
+                job = jobs.get(record.doc_id)
+                path = safe_source_path(self._docs_path, record.doc_id, record.filename)
+                file_status, created_at, size_bytes = source_details(path)
+                documents.append(DocumentSummary(
+                    doc_id=record.doc_id, filename=record.filename, chunks_count=0,
+                    created_at=created_at or record.uploaded_at, file_status=file_status,
+                    kb_id=record.kb_id,
+                    file_type=PurePath(record.filename).suffix.lstrip(".").lower(),
+                    size_bytes=size_bytes,
+                    uploaded_by=job.uploaded_by if job is not None else None,
+                    ingestion_status="failed", published=False,
                 ))
         documents.sort(key=lambda item: str(item.doc_id))
         minimum = datetime.min.replace(tzinfo=timezone.utc)

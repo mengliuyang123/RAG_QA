@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """管理员异步上传与持久任务进度；旧upload仍保留201契约。"""
 
+from datetime import datetime
+from functools import partial
 from typing import Annotated
 from typing import Literal
 from uuid import UUID
@@ -8,6 +10,7 @@ from uuid import UUID
 from fastapi import APIRouter
 from fastapi import Depends
 from fastapi import File
+from fastapi import Form
 from fastapi import Path
 from fastapi import Request
 from fastapi import Response
@@ -16,6 +19,8 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from starlette.concurrency import run_in_threadpool
 
+from app.interfaces.http.container_runtime import current_container
+from app.application.errors import DocumentAlreadyExistsError
 from app.application.ingestion.jobs import IngestionJobService
 from app.domain.auth import User
 from app.domain.ingestion_jobs import IngestionJob
@@ -25,20 +30,42 @@ from app.interfaces.http.auth import require_admin
 router = APIRouter(prefix="/admin")
 
 
-class QueuedIngestionResponse(BaseModel):
-    """仅承诺已经持久入队，不把HTTP接收成功当作索引完成。
+class ExistingDocument(BaseModel):
+    """已登记文档的公开字段。
 
     Attributes:
-        job_id: 后续轮询标识。
-        doc_id: 新文档标识。
-        status: 接收时固定为queued。
+        doc_id: 已有文档标识。
+        kb_id: 所属知识库。
+        filename: 文件名。
+        status: pending、ready 或 failed。
+        uploaded_at: 登记时间。
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    job_id: str
     doc_id: UUID
-    status: Literal["queued"] = "queued"
+    kb_id: str
+    filename: str
+    status: Literal["pending", "ready", "failed"]
+    uploaded_at: datetime
+
+
+class QueuedIngestionResponse(BaseModel):
+    """仅承诺已经持久入队，不把HTTP接收成功当作索引完成。
+
+    Attributes:
+        job_id: 后续轮询标识；内容已存在时为 None。
+        doc_id: 新文档标识，或内容已存在时的已有文档。
+        status: 新入队为 queued；内容完全相同时为 exists。
+        existing: 内容已存在时的已有文档。
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    job_id: str | None
+    doc_id: UUID
+    status: Literal["queued", "exists"] = "queued"
+    existing: ExistingDocument | None = None
 
 
 def get_job_service(request: Request) -> IngestionJobService:
@@ -50,12 +77,12 @@ def get_job_service(request: Request) -> IngestionJobService:
     Returns:
         持久入队与进度服务。
     """
-    return request.app.state.container.ingestion_job_service
+    return current_container(request).ingestion_job_service
 
 
 @router.post(
     "/knowledge-bases/{kb_id}/documents", status_code=202,
-    response_model=QueuedIngestionResponse,
+    response_model=QueuedIngestionResponse, response_model_exclude_unset=True,
 )
 async def submit_ingestion(
     request: Request, response: Response,
@@ -63,6 +90,8 @@ async def submit_ingestion(
     file: Annotated[UploadFile, File()],
     user: Annotated[User, Depends(require_admin)],
     service: Annotated[IngestionJobService, Depends(get_job_service)],
+    on_conflict: Annotated[Literal["replace", "keep_both"] | None, Form()] = None,
+    replace_doc_id: Annotated[UUID | None, Form()] = None,
 ) -> QueuedIngestionResponse:
     """有限读取上传，文件同步与事务入队在线程池完成，不执行入库。
 
@@ -73,21 +102,35 @@ async def submit_ingestion(
         file: 框架管理的上传文件。
         user: 服务器认证的管理员，上传者不可由表单指定。
         service: 持久化任务应用服务。
+        on_conflict: 同名不同内容时用户的选择；不给时返回409让前端询问。
+        replace_doc_id: 选择替换时被替换的旧文档。
 
     Returns:
-        202对应的queued标识，实际进度通过GET读取。
+        202对应的queued标识，实际进度通过GET读取；内容相同则200返回已有文档。
     """
     try:
-        worker = request.app.state.container.ingestion_worker
+        worker = current_container(request).ingestion_worker
         worker.ensure_running()
         content = await file.read(service.max_upload_size + 1)
-        queued = await run_in_threadpool(
-            service.submit, kb_id, file.filename, content, user.id,
-        )
-        worker.wake()
         response.headers["Cache-Control"] = "no-store"
+        try:
+            queued = await run_in_threadpool(
+                partial(
+                    service.submit, kb_id, file.filename, content, user.id,
+                    conflict=on_conflict, replace_doc_id=replace_doc_id,
+                ),
+            )
+        except DocumentAlreadyExistsError as error:
+            response.status_code = 200
+            existing = ExistingDocument.model_validate(error.existing.model_dump(
+                include={"doc_id", "kb_id", "filename", "status", "uploaded_at"},
+            ))
+            return QueuedIngestionResponse(
+                job_id=None, doc_id=existing.doc_id, status="exists", existing=existing,
+            )
+        worker.wake()
         return QueuedIngestionResponse(
-            job_id=queued.job_id, doc_id=queued.doc_id,
+            job_id=queued.job_id, doc_id=queued.doc_id, status="queued",
         )
     finally:
         await file.close()

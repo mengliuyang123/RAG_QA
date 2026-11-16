@@ -3,7 +3,8 @@
 
 from __future__ import annotations
 
-import sqlite3
+import psycopg
+from app.infrastructure.persistence.database import Database, Record
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC
@@ -24,22 +25,14 @@ from app.domain.feedback import TurnFeedback
 _SELECT = """SELECT t.*, COALESCE(t.feedback_updated_at, t.created_at) AS sort_time
     FROM conversation_turns t JOIN conversations c ON c.id = t.conversation_id
     WHERE c.status = 'active' AND t.feedback_json IS NOT NULL
-        AND json_extract(t.feedback_json, '$.rating') = 'down'"""
+        AND (t.feedback_json::jsonb #>> '{rating}') = 'down'"""
 
 
-class SQLiteFeedbackAdminRepository:
+class PostgresFeedbackAdminRepository:
     """只读有限投影，分类只更新当前反馈的处理字段。"""
 
-    def __init__(self, path: Path) -> None:
-        """保存由组合根初始化并隔离的业务路径。
-
-        Args:
-            path: 当前运行业务库。
-
-        Returns:
-            None。
-        """
-        self._path = path
+    def __init__(self, database: Database) -> None:
+        self._database = database
 
     def list(
         self, limit: int, kb_id: str | None,
@@ -63,26 +56,26 @@ class SQLiteFeedbackAdminRepository:
         values: list[object] = []
         if kb_id is not None:
             query += """ AND (EXISTS (
-                SELECT 1 FROM json_each(t.metadata_json, '$.kb_scope.searched') kb
-                WHERE kb.value = ?
+                SELECT 1 FROM jsonb_array_elements_text(t.metadata_json::jsonb #> '{kb_scope,searched}') kb(value)
+                WHERE kb.value = %s
             ) OR EXISTS (SELECT 1 FROM turn_citations citation
-                WHERE citation.turn_id = t.id AND citation.kb_id = ?))"""
+                WHERE citation.turn_id = t.id AND citation.kb_id = %s))"""
             values.extend((kb_id, kb_id))
         if triage == "untriaged":
             query += " AND t.feedback_triage IS NULL"
         elif triage is not None:
-            query += " AND t.feedback_triage = ?"
+            query += " AND t.feedback_triage = %s"
             values.append(triage)
         if before is not None:
-            query += " AND (COALESCE(t.feedback_updated_at, t.created_at), t.id) < (?, ?)"
+            query += " AND (COALESCE(t.feedback_updated_at, t.created_at), t.id) < (%s, %s)"
             values.extend((before[0].isoformat(), str(before[1])))
-        query += " ORDER BY sort_time DESC, t.id DESC LIMIT ?"
+        query += " ORDER BY sort_time DESC, t.id DESC LIMIT %s"
         values.append(limit)
         try:
             with self._connect(read_only=True) as connection:
                 rows = connection.execute(query, values).fetchall()
                 return self._items(connection, rows)
-        except (sqlite3.Error, OSError, ValueError) as error:
+        except (psycopg.Error, OSError, ValueError) as error:
             raise ConversationStorageError("后台反馈读取失败") from error
 
     def triage(
@@ -102,32 +95,32 @@ class SQLiteFeedbackAdminRepository:
         """
         try:
             with self._connect(read_only=False) as connection:
-                connection.execute("BEGIN IMMEDIATE")
-                row = connection.execute(_SELECT + " AND t.id = ?", (str(feedback_id),)).fetchone()
+                connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || 'business_write', 0))")
+                row = connection.execute(_SELECT + " AND t.id = %s", (str(feedback_id),)).fetchone()
                 if row is None:
                     raise FeedbackNotFoundError("反馈不存在")
                 if expected_revision is not None and row["feedback_revision"] != expected_revision:
                     raise FeedbackChangedError("反馈已变化，请刷新后重试")
                 connection.execute(
-                    """UPDATE conversation_turns SET feedback_triage = ?,
-                        feedback_triaged_by = ?, feedback_triaged_at = ? WHERE id = ?""",
+                    """UPDATE conversation_turns SET feedback_triage = %s,
+                        feedback_triaged_by = %s, feedback_triaged_at = %s WHERE id = %s""",
                     (value, str(actor_id), datetime.now(UTC).isoformat(), str(feedback_id)),
                 )
-                row = connection.execute(_SELECT + " AND t.id = ?", (str(feedback_id),)).fetchone()
+                row = connection.execute(_SELECT + " AND t.id = %s", (str(feedback_id),)).fetchone()
                 return self._items(connection, [row])[0]
         except FeedbackChangedError:
             raise
-        except (sqlite3.Error, OSError, ValueError) as error:
+        except (psycopg.Error, OSError, ValueError) as error:
             raise ConversationStorageError("后台反馈分类失败") from error
 
     @staticmethod
     def _items(
-        connection: sqlite3.Connection, rows: list[sqlite3.Row],
+        connection: psycopg.Connection, rows: list[Record],
     ) -> tuple[AdminFeedbackItem, ...]:
         if not rows:
             return ()
         identifiers = [row["id"] for row in rows]
-        placeholders = ",".join("?" for _ in identifiers)
+        placeholders = ",".join("%s" for _ in identifiers)
         citation_rows = connection.execute(
             "SELECT * FROM turn_citations WHERE turn_id IN (" + placeholders + ") "
             "ORDER BY turn_id, COALESCE(citation_order, position)", identifiers,
@@ -157,14 +150,9 @@ class SQLiteFeedbackAdminRepository:
         return tuple(items)
 
     @contextmanager
-    def _connect(self, read_only: bool) -> Iterator[sqlite3.Connection]:
-        suffix = "?mode=ro" if read_only else "?mode=rw"
-        connection = sqlite3.connect(self._path.resolve().as_uri() + suffix, uri=True, timeout=5)
-        connection.row_factory = sqlite3.Row
+    def _connect(self, read_only: bool) -> Iterator[psycopg.Connection]:
         try:
-            with connection:
-                if read_only:
-                    connection.execute("BEGIN")
+            with self._database.connection(read_only=read_only) as connection:
                 yield connection
-        finally:
-            connection.close()
+        except psycopg.Error as exc:
+            raise ConversationStorageError("PostgreSQL 仓储操作失败") from exc

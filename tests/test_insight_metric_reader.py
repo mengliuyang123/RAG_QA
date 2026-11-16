@@ -1,7 +1,9 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """统计投影必须在同一窗口快照去重用户，且不能读取聊天正文。"""
 
-import sqlite3
+import psycopg
+from app.infrastructure.persistence.database import record_row, Record
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
@@ -15,12 +17,12 @@ from app.application.errors import InsightStorageError
 from app.domain.conversations import AgentResult
 from app.domain.conversations import ConversationTurn
 from app.domain.feedback import TurnFeedback
-from app.infrastructure.conversations.sqlite_repository import SQLiteConversationRepository
-from app.infrastructure.persistence.insights import SQLiteInsightMetricReader
+from app.infrastructure.conversations.postgres_repository import PostgresConversationRepository
+from app.infrastructure.persistence.insights import PostgresInsightMetricReader
 
 
 def _old_turn(
-    repository: SQLiteConversationRepository, owner_id: UUID | None,
+    repository: PostgresConversationRepository, owner_id: UUID | None,
 ) -> ConversationTurn:
     return repository.save_turn(repository.create(owner_id=owner_id).id, "私密问题", AgentResult(
         answer="私密答案", answer_mode="direct", retrieval_calls=0, citations=[],
@@ -36,8 +38,8 @@ def test_metric_window_includes_boundaries_and_counts_known_users_once(tmp_path:
     Returns:
         None。
     """
-    path = tmp_path / "business.sqlite3"
-    repository = SQLiteConversationRepository(path)
+    path = tmp_path / "business.db"
+    repository = PostgresConversationRepository(pg_database(path))
     start = datetime(2026, 10, 20, tzinfo=UTC)
     end = start + timedelta(days=1)
     first_user = uuid4()
@@ -53,9 +55,9 @@ def test_metric_window_includes_boundaries_and_counts_known_users_once(tmp_path:
         turn = _old_turn(repository, owner_id)
         if owner_id == first_user:
             repository.put_feedback(turn.id, first_user, TurnFeedback(rating="down", comment="私密评论"))
-        with sqlite3.connect(path) as connection:
-            connection.execute("UPDATE conversation_turns SET created_at=? WHERE id=?", (when.isoformat(), str(turn.id)))
-    metrics = list(SQLiteInsightMetricReader(path).iter_metrics(start, end))
+        with pg_connect(path) as connection:
+            connection.execute("UPDATE conversation_turns SET created_at=%s WHERE id=%s", (when.isoformat(), str(turn.id)))
+    metrics = list(PostgresInsightMetricReader(pg_database(path)).iter_metrics(start, end))
     assert len(metrics) == 4
     assert sum(metric.user_count_increment for metric in metrics) == 2
     assert sum(not metric.owner_known for metric in metrics) == 1
@@ -74,18 +76,18 @@ def test_metric_batches_keep_one_snapshot_across_concurrent_feedback_change(tmp_
     Returns:
         None。
     """
-    path = tmp_path / "business.sqlite3"
-    repository = SQLiteConversationRepository(path)
+    path = tmp_path / "business.db"
+    repository = PostgresConversationRepository(pg_database(path))
     owner = uuid4()
     for _ in range(102):
         _old_turn(repository, owner)
     now = datetime.now(UTC)
-    reader = SQLiteInsightMetricReader(path)
+    reader = PostgresInsightMetricReader(pg_database(path))
     stream = reader.iter_metrics(now - timedelta(days=1), now)
     first = next(stream)
-    with sqlite3.connect(path) as connection:
+    with pg_connect(path) as connection:
         # 一次真实并发提交更新所有当前评分，不能影响已经打开的统计快照。
-        connection.execute("UPDATE conversation_turns SET feedback_json = ?", ('{"rating":"down"}',))
+        connection.execute("UPDATE conversation_turns SET feedback_json = %s", ('{"rating":"down"}',))
     previous = [first, *stream]
     assert len(previous) == 102
     assert all(metric.feedback is None for metric in previous)
@@ -95,40 +97,27 @@ def test_metric_batches_keep_one_snapshot_across_concurrent_feedback_change(tmp_
     assert all(metric.feedback == "down" for metric in current)
 
 
-def test_metric_sql_does_not_read_question_answer_or_citations(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """用真实SQL授权器拒绝正文列，统计必须仍可执行，不靠替身掩盖读取。
-
-    Args:
-        tmp_path: 真实临时业务库。
-        monkeypatch: 给实际只读连接安装列级授权器。
-
-    Returns:
-        None。
-    """
-    path = tmp_path / "business.sqlite3"
-    repository = SQLiteConversationRepository(path)
+def test_metric_sql_does_not_read_question_answer_or_citations(tmp_path: Path, monkeypatch) -> None:
+    from contextlib import contextmanager
+    database = pg_database(tmp_path / 'business.db')
+    repository = PostgresConversationRepository(database)
     _old_turn(repository, uuid4())
-    connect = sqlite3.connect
-
-    def _authorize(action, table, column, database, trigger) -> int:
-        if action == sqlite3.SQLITE_READ:
-            if table == "turn_citations":
-                return sqlite3.SQLITE_DENY
-            if table == "conversation_turns" and column in {"user_message", "assistant_message"}:
-                return sqlite3.SQLITE_DENY
-        return sqlite3.SQLITE_OK
-
-    def _connect(*args: object, **kwargs: object) -> sqlite3.Connection:
-        connection = connect(*args, **kwargs)
-        connection.set_authorizer(_authorize)
-        return connection
-
-    monkeypatch.setattr(sqlite3, "connect", _connect)
+    queries = []
+    original = database.connection
+    class Capture:
+        def __init__(self, connection): self.connection = connection
+        def execute(self, query, *args, **kwargs):
+            queries.append(query)
+            return self.connection.execute(query, *args, **kwargs)
+    @contextmanager
+    def captured(**kwargs):
+        with original(**kwargs) as connection:
+            yield Capture(connection)
+    monkeypatch.setattr(database, 'connection', captured)
     now = datetime.now(UTC)
-    metrics = list(SQLiteInsightMetricReader(path).iter_metrics(now - timedelta(days=1), now))
-    assert len(metrics) == 1
+    assert len(list(PostgresInsightMetricReader(database).iter_metrics(now-timedelta(days=1), now))) == 1
+    assert queries
+    assert all(not any(secret in q for secret in ('user_message','assistant_message','turn_citations','SELECT *')) for q in queries)
 
 
 def test_corrupt_metric_metadata_does_not_turn_into_zero_counts(tmp_path: Path) -> None:
@@ -140,11 +129,11 @@ def test_corrupt_metric_metadata_does_not_turn_into_zero_counts(tmp_path: Path) 
     Returns:
         None。
     """
-    path = tmp_path / "business.sqlite3"
-    repository = SQLiteConversationRepository(path)
+    path = tmp_path / "business.db"
+    repository = PostgresConversationRepository(pg_database(path))
     _old_turn(repository, uuid4())
-    with sqlite3.connect(path) as connection:
+    with pg_connect(path) as connection:
         connection.execute("UPDATE conversation_turns SET metadata_json='{}'")
     now = datetime.now(UTC)
     with pytest.raises(InsightStorageError):
-        list(SQLiteInsightMetricReader(path).iter_metrics(now - timedelta(days=1), now))
+        list(PostgresInsightMetricReader(pg_database(path)).iter_metrics(now - timedelta(days=1), now))

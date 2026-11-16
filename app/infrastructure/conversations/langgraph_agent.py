@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """基于 LangGraph 的受控多轮 Agentic RAG 实现。"""
 
+from app.application.conversations.generative_ui import track_retrieval
 import json
 from collections.abc import Callable
 from threading import RLock
@@ -24,6 +25,7 @@ from app.application.errors import ConversationAgentError
 from app.application.errors import ConversationTimeoutError
 from app.application.errors import EmbeddingTimeoutError
 from app.application.errors import LLMTimeoutError
+from app.application.errors import LLMGenerationError
 from app.application.execution_control import check_cancellation
 from app.application.execution_control import deadline_scope
 from app.application.tracing import traced_step
@@ -52,6 +54,7 @@ from app.domain.retrieval import RetrievalStrategy
 from app.infrastructure.conversations.prompts import AGENT_SYSTEM_PROMPT
 from app.infrastructure.conversations.prompts import PARTIAL_EVIDENCE_NOTE
 from app.infrastructure.conversations.prompts import REPAIR_SYSTEM_PROMPT
+from app.infrastructure.conversations.prompts import FINAL_ANSWER_SYSTEM_PROMPT
 from app.infrastructure.conversations.quality import ModelQualityEvaluator
 from app.infrastructure.conversations.quality_workflow import (
     AgentQualityWorkflow,
@@ -268,6 +271,8 @@ class LangGraphConversationAgent:
             raise ConversationAgentError("Agent 达到递归上限") from exc
         except ConversationAgentError:
             raise
+        except LLMGenerationError:
+            raise
         except PromptContextTooLargeError:
             raise
         except Exception as exc:
@@ -334,10 +339,8 @@ class LangGraphConversationAgent:
         )
         builder.add_conditional_edges(
             "search_knowledge_base",
-            lambda state: (
-                "refusal" if state.get("limit_reached") else "assess"
-            ),
-            {"assess": "assess_evidence", "refusal": "refusal"},
+            self._route_after_tools,
+            {"assess": "assess_evidence", "agent": "agent", "refusal": "refusal"},
         )
         builder.add_conditional_edges(
             "assess_evidence", self._route_after_evidence,
@@ -345,10 +348,8 @@ class LangGraphConversationAgent:
         )
         builder.add_conditional_edges(
             "retry_search",
-            lambda state: (
-                "refusal" if state.get("limit_reached") else "assess"
-            ),
-            {"assess": "assess_evidence", "refusal": "refusal"},
+            self._route_after_tools,
+            {"assess": "assess_evidence", "agent": "agent", "refusal": "refusal"},
         )
         builder.add_conditional_edges(
             "validate",
@@ -493,8 +494,15 @@ class LangGraphConversationAgent:
         self._check_budget(state)
         messages = state["messages"]
         gaps = self._evidence_gaps(state)
+        # 补查由证据审核节点控制；到达生成节点后不再让模型重开检索循环。
+        use_tools = state["retrieval_calls"] == 0
         if state["retrieval_calls"] > 0:
             messages = self._quality.approved_messages(state)
+            messages = [
+                {**message, 'content': FINAL_ANSWER_SYSTEM_PROMPT}
+                if message.get('role') == 'system' else message
+                for message in messages
+            ]
             if gaps:
                 messages = [*messages, {
                     "role": "user",
@@ -503,21 +511,27 @@ class LangGraphConversationAgent:
                     }, ensure_ascii=False),
                 }]
         if self._prompt_guard is not None:
-            self._prompt_guard.ensure(
-                messages, extra_payload={"tools": [_SEARCH_TOOL]},
-            )
+            if use_tools:
+                self._prompt_guard.ensure(messages, extra_payload={"tools": [_SEARCH_TOOL]})
+            else:
+                self._prompt_guard.ensure(messages)
         with traced_step(
             "generation" if state["retrieval_calls"] else "planning",
         ) as step:
             response = self._invoke_model(
                 messages, "generation" if state["retrieval_calls"] else "planning",
-                use_tools=True,
+                use_tools=use_tools,
             )
-            step.set_output({"characters": len(str(response.content))})
+            step.set_output({'characters': len(str(response.content)), 'tools_enabled': use_tools,
+                             'unexpected_tool_calls': bool(response.tool_calls and not use_tools)})
         self._check_budget(state)
         self._ensure_complete_response(response)
         tool_calls = [dict(call) for call in response.tool_calls]
         content = self._message_text(response.content)
+        if not use_tools and tool_calls:
+            # 不执行额外工具；空草稿进入唯一一次无工具修复，避免无界重试。
+            tool_calls = []
+            content = ''
         if state["retrieval_calls"] == 0:
             valid_calls = [call for call in tool_calls if self._tool_query(call)]
             if not valid_calls:
@@ -626,10 +640,12 @@ class LangGraphConversationAgent:
                         "top_k": state["top_k"],
                     }) as step,
                 ):
-                    results = self._retrieval_service.retrieve(
-                        query, strategy=RetrievalStrategy(state["retrieval_strategy"]),
-                        top_k=state["top_k"], **retrieval_options,
-                    )
+                    with track_retrieval(query, retrieval_options.get("kb_ids")) as ui_rows:
+                        results = self._retrieval_service.retrieve(
+                            query, strategy=RetrievalStrategy(state["retrieval_strategy"]),
+                            top_k=state["top_k"], **retrieval_options,
+                        )
+                        ui_rows.extend(results)
                     step.set_output({"results": [
                         {"chunk_id": item.chunk_id, "kb_id": item.kb_id,
                          "score": item.score, "rank": rank}
@@ -699,6 +715,12 @@ class LangGraphConversationAgent:
             # 拒绝多余工具不等于已有新证据不可用；仍须判断本批合法召回。
             "limit_reached": retrieval_calls == previous_calls,
         }
+
+    @staticmethod
+    def _route_after_tools(state: AgentState) -> str:
+        if not state.get('limit_reached'):
+            return 'assess'
+        return 'agent' if state.get('approved_evidence') else 'refusal'
 
     @staticmethod
     def _route_after_evidence(state: AgentState) -> str:
@@ -829,6 +851,8 @@ class LangGraphConversationAgent:
             step.set_output({"characters": len(str(response.content))})
         self._check_budget(state)
         self._ensure_complete_response(response)
+        if response.tool_calls or not self._message_text(response.content).strip():
+            raise LLMGenerationError('已批准证据的无工具修复未产生可用正文')
         return {
             "draft_answer": self._message_text(response.content),
             "repair_attempted": True,
@@ -902,6 +926,8 @@ class LangGraphConversationAgent:
 
     @staticmethod
     def _refusal(state: AgentState) -> AgentState:
+        if state.get('approved_evidence') and state.get('evidence_assessment', {}).get('sufficient'):
+            raise LLMGenerationError('已有批准证据，但生成或引用修复未能完成')
         mode = (
             AnswerMode.RETRIEVAL
             if state.get("retrieval_calls", 0) > 0

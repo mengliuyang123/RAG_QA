@@ -1,17 +1,26 @@
-import { useState } from "react";
-import type { Citation, FeedbackRating, KbScope, Turn } from "../api/types";
+import { CheckCircle2Icon, ChevronDownIcon, FileTextIcon, SearchXIcon } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import type { Citation, KbScope, Turn } from "../api/types";
 import { evidenceSummary } from "../lib/evidence";
+import { RETRIEVAL_TOOL, retrievalReasons } from "../lib/generative";
 import { useApp } from "../state/AppContext";
+import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 import { AnswerText } from "./AnswerText";
-import { Icon } from "./Icon";
 
-interface TurnViewProps {
+// 一轮已完成回答的正文部分（过程摘要、澄清/拒答卡片、正文与引用）。
+// 不依赖 assistant-ui 上下文，便于单独测试；问题气泡与操作栏由 chat/Messages 组合。
+interface TurnBodyProps {
   turn: Turn;
   activeCitation: Citation | null;
   onCite(citation: Citation): void;
   onAsk(question: string): void;
   onRetryWithScope(scope: KbScope, question: string): void;
-  onFeedback(turnId: string, rating: FeedbackRating | null): void;
+  /**
+   * 渲染消息片段（工具卡片 → 正文 → 数据块）；assistant-ui 中传入 MessagePrimitive.Parts。
+   * 不传时只在已回答的轮次渲染 AnswerText（单测与旧用法）。
+   */
+  renderParts?: (activePosition: number | null) => ReactNode;
 }
 
 function formatSeconds(ms: number): string {
@@ -24,10 +33,10 @@ function formatDate(value: string | null): string | null {
   return Number.isNaN(date.getTime()) ? null : date.toLocaleDateString("zh-CN");
 }
 
-const GROUNDING = {
-  grounded: { className: "chip-success", text: "有据可查" },
-  partial: { className: "chip-warning", text: "部分依据" },
-  ungrounded: { className: "", text: "未参考知识库" },
+export const GROUNDING = {
+  grounded: { className: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300", text: "有据可查" },
+  partial: { className: "bg-amber-500/10 text-amber-700 dark:text-amber-300", text: "部分依据" },
+  ungrounded: { className: "bg-muted text-muted-foreground", text: "未参考知识库" },
 } as const;
 
 function ProcessSummary({ turn }: { turn: Turn }) {
@@ -42,13 +51,16 @@ function ProcessSummary({ turn }: { turn: Turn }) {
       ? "已查找，但资料不足"
       : `参考了 ${sources} 份资料`;
 
+  // 有检索卡片时，范围、次数、扩大范围和深度检索已经在卡片标题里表达，这里不再重复。
+  const hasCards = turn.toolCalls.some((call) => call.name === RETRIEVAL_TOOL);
+  const reasons = retrievalReasons(turn.toolCalls);
   const details: string[] = [];
-  if (turn.searchedKbIds.length > 0) {
+  if (!hasCards && turn.searchedKbIds.length > 0) {
     details.push(`检索范围：${turn.searchedKbIds.map(kbName).join("、")}`);
   }
-  if (turn.scopeExpanded) details.push("所选范围内证据不足，已扩大到全部知识库");
-  if (turn.escalated) details.push("问题较复杂，已升级为深度检索");
-  if (turn.retrievalCalls > 0) details.push(`共检索 ${turn.retrievalCalls} 次`);
+  if (turn.scopeExpanded && !reasons.has("expand_scope")) details.push("所选范围内证据不足，已扩大到全部知识库");
+  if (turn.escalated && !reasons.has("escalate")) details.push("问题较复杂，已升级为深度检索");
+  if (!hasCards && turn.retrievalCalls > 0) details.push(`共检索 ${turn.retrievalCalls} 次`);
   const evidence = evidenceSummary(turn);
   if (evidence) details.push(evidence);
   if (user?.role === "admin") {
@@ -57,24 +69,22 @@ function ProcessSummary({ turn }: { turn: Turn }) {
   }
 
   return (
-    <div className="process">
+    <div className="mb-2">
       <button
         type="button"
-        className="process-head"
+        className="group inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground disabled:hover:text-muted-foreground"
         aria-expanded={open}
         onClick={() => setOpen(!open)}
         disabled={details.length === 0}
       >
-        <span className="step-dot done"><Icon name="check" size={14} /></span>
-        <span className="grow">{headline} · {formatSeconds(turn.latencyMs)}</span>
+        <CheckCircle2Icon className="size-4" />
+        <span>{headline} · {formatSeconds(turn.latencyMs)}</span>
         {details.length > 0 && (
-          <span style={{ transform: open ? "rotate(180deg)" : undefined, display: "inline-flex" }}>
-            <Icon name="chevron" size={14} />
-          </span>
+          <ChevronDownIcon className={cn("size-3.5 transition-transform", open && "rotate-180")} />
         )}
       </button>
       {open && (
-        <ul className="process-steps">
+        <ul className="mt-2 ml-2 flex flex-col gap-1 border-l pl-4 text-sm text-muted-foreground animate-in fade-in slide-in-from-top-1">
           {details.map((detail) => <li key={detail}>{detail}</li>)}
         </ul>
       )}
@@ -94,75 +104,96 @@ function RetryScopePicker({ turn, onRetry }: { turn: Turn; onRetry(scope: KbScop
   const ordered = [...others].sort((a, b) => Number(b.id === suggested) - Number(a.id === suggested));
 
   return (
-    <div style={{ marginTop: 10 }}>
-      <div className="secondary" style={{ fontSize: 13 }}>在其他知识库中重新查找：</div>
-      <div className="option-row" style={{ marginTop: 6 }}>
+    <div className="mt-3">
+      <div className="text-sm text-muted-foreground">在其他知识库中重新查找：</div>
+      <div className="mt-2 flex flex-wrap gap-2">
         {ordered.map((kb) => (
-          <button
+          <Button
             key={kb.id}
             type="button"
-            className={`btn ${kb.id === suggested ? "btn-primary" : ""}`}
+            size="sm"
+            variant={kb.id === suggested ? "default" : "outline"}
+            className="rounded-full"
             onClick={() => onRetry({ mode: "explicit", kbIds: [kb.id] })}
           >
             {kb.name}
-            {kb.id === suggested && <span style={{ fontSize: 12, opacity: 0.85 }}>推荐</span>}
-          </button>
+            {kb.id === suggested && <span className="text-xs opacity-80">推荐</span>}
+          </Button>
         ))}
-        <button type="button" className="btn" onClick={() => onRetry({ mode: "auto", kbIds: [] })}>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="rounded-full"
+          onClick={() => onRetry({ mode: "auto", kbIds: [] })}
+        >
           自动（全部知识库）
-        </button>
+        </Button>
       </div>
     </div>
   );
 }
 
-export function TurnView({ turn, activeCitation, onCite, onAsk, onRetryWithScope, onFeedback }: TurnViewProps) {
+export function TurnBody({ turn, activeCitation, onCite, onAsk, onRetryWithScope, renderParts }: TurnBodyProps) {
   const { kbName } = useApp();
-  const [copied, setCopied] = useState(false);
-  const grounding = GROUNDING[turn.grounding];
-  const activePosition = activeCitation && turn.citations.includes(activeCitation)
+  // 引用对象在状态更新后会换新引用，按文档、分块和编号判断当前高亮。
+  const activePosition = activeCitation && turn.citations.some(
+    (citation) => citation.docId === activeCitation.docId && citation.position === activeCitation.position
+      && citation.chunkId === activeCitation.chunkId,
+  )
     ? activeCitation.position
     : null;
 
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(turn.answer);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      setCopied(false);
-    }
-  };
-
-  const toggleFeedback = (rating: FeedbackRating) =>
-    onFeedback(turn.id, turn.feedback === rating ? null : rating);
-
   return (
-    <article className="turn" aria-label="一轮问答">
-      <div className="question">{turn.question}</div>
+    <>
       <ProcessSummary turn={turn} />
 
+      {renderParts
+        ? renderParts(activePosition)
+        : turn.outcome === "answered" && (
+          <AnswerText
+            answer={turn.answer}
+            citations={turn.citations}
+            activePosition={activePosition}
+            onCite={onCite}
+          />
+        )}
+
       {turn.outcome === "clarification" && turn.clarification && (
-        <div className="notice-card">
-          <h4>{turn.clarification.question}</h4>
-          <div className="option-row">
+        <div className="rounded-xl border bg-card p-4">
+          <h4 className="m-0 font-medium">{turn.clarification.question}</h4>
+          <div className="mt-3 flex flex-wrap gap-2">
             {turn.clarification.options.map((option) => (
-              <button key={option} type="button" className="btn" onClick={() => onAsk(option)}>
+              <Button
+                key={option}
+                type="button"
+                size="sm"
+                variant="outline"
+                className="rounded-full"
+                onClick={() => onAsk(option)}
+              >
                 {option}
-              </button>
+              </Button>
             ))}
           </div>
         </div>
       )}
 
       {turn.outcome === "refused" && (
-        <div className="notice-card">
-          <h4>暂时无法从知识库中找到可靠答案</h4>
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4">
+          <h4 className="m-0 flex items-center gap-2 font-medium">
+            <SearchXIcon className="size-4 text-amber-600 dark:text-amber-400" />
+            暂时无法从知识库中找到可靠答案
+          </h4>
           {(evidenceSummary(turn) ?? turn.refusal?.foundSummary) && (
-            <div className="secondary">{evidenceSummary(turn) ?? turn.refusal?.foundSummary}</div>
+            <div className="mt-1.5 text-sm text-muted-foreground">
+              {evidenceSummary(turn) ?? turn.refusal?.foundSummary}
+            </div>
           )}
           {turn.refusal && turn.refusal.missing.length > 0 && (
-            <ul>{turn.refusal.missing.map((item) => <li key={item}>缺少：{item}</li>)}</ul>
+            <ul className="mt-2 list-disc pl-5 text-sm">
+              {turn.refusal.missing.map((item) => <li key={item}>缺少：{item}</li>)}
+            </ul>
           )}
           <RetryScopePicker turn={turn} onRetry={(scope) => onRetryWithScope(scope, turn.question)} />
         </div>
@@ -170,30 +201,33 @@ export function TurnView({ turn, activeCitation, onCite, onAsk, onRetryWithScope
 
       {turn.outcome === "answered" && (
         <>
-          <AnswerText
-            answer={turn.answer}
-            citations={turn.citations}
-            activePosition={activePosition}
-            onCite={onCite}
-          />
           {turn.citations.length > 0 && (
-            <div className="citations" aria-label="引用来源">
+            <div className="mt-3 flex flex-wrap gap-2" aria-label="引用来源">
               {[...turn.citations].sort((a, b) => a.position - b.position).map((citation) => {
                 const updated = formatDate(citation.docUpdatedAt);
+                const active = activePosition === citation.position;
                 return (
                   <button
                     key={citation.position}
                     type="button"
-                    className={`citation ${activePosition === citation.position ? "active" : ""}`}
+                    title={updated ? `更新于 ${updated}` : undefined}
+                    className={cn(
+                      "inline-flex max-w-full items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-left text-xs transition-colors hover:bg-muted",
+                      active && "border-foreground/30 bg-muted",
+                    )}
                     onClick={() => onCite(citation)}
                   >
-                    <span className="pos">[{citation.position}]</span>
-                    {citation.kbId && <span className="chip">{kbName(citation.kbId)}</span>}
-                    <span className="name">
+                    <span className="font-mono text-muted-foreground">[{citation.position}]</span>
+                    <FileTextIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                    <span className="truncate">
                       {citation.filename}
                       {citation.page !== null && ` · 第 ${citation.page} 页`}
                     </span>
-                    {updated && <span className="muted" style={{ fontSize: 12 }}>更新于 {updated}</span>}
+                    {citation.kbId && (
+                      <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                        {kbName(citation.kbId)}
+                      </span>
+                    )}
                   </button>
                 );
               })}
@@ -201,37 +235,6 @@ export function TurnView({ turn, activeCitation, onCite, onAsk, onRetryWithScope
           )}
         </>
       )}
-
-      <div className="turn-actions">
-        {turn.outcome === "answered" && (
-          <span className={`chip ${grounding.className}`}>{grounding.text}</span>
-        )}
-        {turn.outcome === "refused" && <span className="chip chip-warning">资料不足</span>}
-        <span className="grow" />
-        {turn.outcome === "answered" && (
-          <button type="button" className="icon-btn" aria-label={copied ? "已复制" : "复制回答"} title={copied ? "已复制" : "复制"} onClick={copy}>
-            <Icon name={copied ? "check" : "copy"} />
-          </button>
-        )}
-        <button
-          type="button"
-          className={`icon-btn ${turn.feedback === "up" ? "on" : ""}`}
-          aria-label="有帮助"
-          aria-pressed={turn.feedback === "up"}
-          onClick={() => toggleFeedback("up")}
-        >
-          <Icon name="up" />
-        </button>
-        <button
-          type="button"
-          className={`icon-btn ${turn.feedback === "down" ? "on" : ""}`}
-          aria-label="没帮助"
-          aria-pressed={turn.feedback === "down"}
-          onClick={() => toggleFeedback("down")}
-        >
-          <Icon name="down" />
-        </button>
-      </div>
-    </article>
+    </>
   );
 }

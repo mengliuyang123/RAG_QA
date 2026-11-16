@@ -176,7 +176,7 @@ def test_factory_quality_calls_use_unbound_model_and_real_sdk_protocol(
     assert result.answer == "A 使用 SQLite[1]"
     assert result.citations[0].filename == "a.md"
     assert [bool(request.get("tools")) for request in requests] == [
-        True, False, True, False,
+        True, False, False, False,
     ]
     other = (
         "max_tokens" if parameter == "max_completion_tokens"

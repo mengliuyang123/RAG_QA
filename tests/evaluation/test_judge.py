@@ -35,8 +35,8 @@ def _settings(tmp_path: Path, **overrides: object) -> Settings:
         "evaluation_judge_api_key": "judge-key",
         "evaluation_judge_base_url": "https://judge.example/v1",
         "evaluation_judge_model": "judge-model",
-        "chroma_path": tmp_path / "production",
-        "evaluation_chroma_path": tmp_path / "evaluation",
+        "artifacts_path": tmp_path / "production",
+        "evaluation_artifacts_path": tmp_path / "evaluation",
         "_env_file": None,
     }
     values.update(overrides)

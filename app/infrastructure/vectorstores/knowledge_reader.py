@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Chroma目录读取辅助：先验证元数据，只对选定的有限块加载正文。"""
+"""PostgreSQL目录读取辅助：先验证元数据，只对选定的有限块加载正文。"""
 
 from datetime import datetime
 from collections.abc import Iterator

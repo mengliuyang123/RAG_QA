@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """持久任务执行、租约心跳、旧部分索引恢复及收费边界测试。"""
 
@@ -21,28 +22,28 @@ from app.domain.documents import DocumentChunk
 from app.infrastructure.chunking.recursive import RecursiveDocumentChunker
 from app.infrastructure.indexes.bm25 import BM25Index
 from app.infrastructure.parsing.factory import ParserFactory
-from app.infrastructure.persistence.ingestion_execution import LocalIngestionExecutionGuard
-from app.infrastructure.persistence.ingestion_jobs import SQLiteIngestionJobRepository
+from app.infrastructure.persistence.ingestion_execution import PostgresIngestionExecutionGuard
+from app.infrastructure.persistence.ingestion_jobs import PostgresIngestionJobRepository
 from app.infrastructure.persistence.ingestion_sources import LocalIngestionSources
-from app.infrastructure.persistence.knowledge_bases import SQLiteKnowledgeBaseRepository
-from app.infrastructure.vectorstores.chroma import ChromaVectorStore
+from app.infrastructure.persistence.knowledge_bases import PostgresKnowledgeBaseRepository
+from app.infrastructure.vectorstores.postgres import PostgresVectorStore
 from tests.test_ingestion_job_repository import Clock
 from tests.test_job_ingestion_pipeline import BatchEmbedder
 
 
 def _setup(tmp_path: Path, embedder: BatchEmbedder, *, clock=None, lease_seconds=30):
-    path = tmp_path / "catalog.sqlite3"
-    catalog = SQLiteKnowledgeBaseRepository(path)
+    path = tmp_path / "catalog.db"
+    catalog = PostgresKnowledgeBaseRepository(pg_database(path))
     options = {}
     if clock is not None:
         options["clock"] = clock
-    jobs = SQLiteIngestionJobRepository(path, **options)
+    jobs = PostgresIngestionJobRepository(pg_database(path), **options)
     sources = LocalIngestionSources(tmp_path / "docs")
     service = IngestionJobService(
         catalog, jobs, sources, ParserFactory(), max_upload_size=1024, capacity=1,
     )
     queued = service.submit("default", "guide.txt", b"abcdefghij\n" * 5, uuid4())
-    store = ChromaVectorStore(tmp_path / "chroma", "runner_test")
+    store = PostgresVectorStore(pg_database(tmp_path / "chroma"), "runner_test")
     index = BM25Index()
     lock = RLock()
     chunker = RecursiveDocumentChunker(11, 0)
@@ -54,7 +55,7 @@ def _setup(tmp_path: Path, embedder: BatchEmbedder, *, clock=None, lease_seconds
         chunker, embedder, store, index, ParserFactory(), deletion,
         embedding_batch_size=2, mutation_lock=lock,
     )
-    guard = LocalIngestionExecutionGuard(tmp_path / "worker.lock")
+    guard = PostgresIngestionExecutionGuard(pg_database(tmp_path / "worker.lock"))
     runner = IngestionJobRunner(
         jobs, sources, lambda: pipeline, lambda: deletion, guard,
         lease_seconds=lease_seconds, heartbeat_seconds=0.05,

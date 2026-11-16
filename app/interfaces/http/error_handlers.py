@@ -10,6 +10,8 @@ from fastapi.responses import JSONResponse
 
 from app.application.errors import DocumentDeletePartialError
 from app.application.errors import DocumentIngestionInProgressError
+from app.application.errors import DocumentNameConflictError
+from app.application.errors import DocumentReplaceConflictError
 from app.application.errors import ConversationAgentError
 from app.application.errors import ConversationBusyError
 from app.application.errors import ConversationDeleteError
@@ -128,6 +130,46 @@ async def _handle_share_error(
             "error": {"code": code, "message": message, "details": {}},
         },
     )
+
+
+def stored_document_payload(document: object) -> dict[str, object]:
+    """把登记文档转换为前端可展示的公开字段，不包含路径。
+
+    Args:
+        document: StoredDocument。
+
+    Returns:
+        JSON 可序列化字典。
+    """
+    return {
+        "doc_id": str(document.doc_id), "kb_id": document.kb_id,
+        "filename": document.filename, "status": document.status,
+        "uploaded_at": document.uploaded_at.isoformat(),
+    }
+
+
+async def _handle_document_name_conflict(
+    request: Request, error: DocumentNameConflictError,
+) -> JSONResponse:
+    message = "知识库中已有同名文档，请选择替换或另存为一篇"
+    existing = stored_document_payload(error.existing)
+    return JSONResponse(status_code=409, headers={"Cache-Control": "no-store"}, content={
+        "detail": message,
+        "error": {
+            "code": "document_name_conflict", "message": message,
+            "details": {"existing": existing},
+        },
+    })
+
+
+async def _handle_document_replace_conflict(
+    request: Request, error: DocumentReplaceConflictError,
+) -> JSONResponse:
+    message = str(error) or "被替换的文档暂时不能替换"
+    return JSONResponse(status_code=409, headers={"Cache-Control": "no-store"}, content={
+        "detail": message,
+        "error": {"code": "document_replace_conflict", "message": message, "details": {}},
+    })
 
 
 async def _handle_document_ingestion_busy(
@@ -568,6 +610,12 @@ def register_error_handlers(application: FastAPI) -> None:
     )
     application.add_exception_handler(
         DocumentIngestionInProgressError, _handle_document_ingestion_busy,
+    )
+    application.add_exception_handler(
+        DocumentNameConflictError, _handle_document_name_conflict,
+    )
+    application.add_exception_handler(
+        DocumentReplaceConflictError, _handle_document_replace_conflict,
     )
     for error_type in (
         QuestionRateLimitError, QuestionQueueFullError, QuestionQueueTimeoutError,

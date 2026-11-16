@@ -1,7 +1,10 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """用真实SQLite验证有界任务登记、租约和发布状态，不联网。"""
 
-import sqlite3
+import os
+import psycopg
+from app.infrastructure.persistence.database import record_row, Record
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC
 from datetime import datetime
@@ -18,9 +21,9 @@ from app.application.errors import IngestionQueueFullError
 from app.application.errors import KnowledgeBaseNotFoundError
 from app.domain.ingestion_jobs import IngestionJobSubmission
 from app.domain.knowledge_bases import KnowledgeBase
-from app.infrastructure.persistence.ingestion_jobs import SQLiteIngestionJobRepository
+from app.infrastructure.persistence.ingestion_jobs import PostgresIngestionJobRepository
 from app.infrastructure.persistence.ingestion_jobs import has_pending_ingestion_jobs
-from app.infrastructure.persistence.knowledge_bases import SQLiteKnowledgeBaseRepository
+from app.infrastructure.persistence.knowledge_bases import PostgresKnowledgeBaseRepository
 
 
 class Clock:
@@ -43,18 +46,19 @@ class Clock:
         return self.now
 
 
-def _repository(tmp_path: Path, clock: Clock) -> SQLiteIngestionJobRepository:
-    path = tmp_path / "catalog.sqlite3"
-    catalog = SQLiteKnowledgeBaseRepository(path)
+def _repository(tmp_path: Path, clock: Clock) -> PostgresIngestionJobRepository:
+    path = tmp_path / "catalog.db"
+    catalog = PostgresKnowledgeBaseRepository(pg_database(path))
     catalog.create(KnowledgeBase(id="ops", name="运维"))
-    return SQLiteIngestionJobRepository(path, clock=clock)
+    return PostgresIngestionJobRepository(pg_database(path), clock=clock)
 
 
 def _submission(kb_id: str = "ops") -> IngestionJobSubmission:
     return IngestionJobSubmission(
         job_id=f"job_{uuid4().hex}", doc_id=uuid4(), kb_id=kb_id,
         filename="部署说明.md", size_bytes=14, uploaded_by=uuid4(),
-        content_sha256="a" * 64,
+        # 同库同内容会被 documents 查重拒绝，每个提交使用不同摘要。
+        content_sha256=uuid4().hex * 2,
     )
 
 
@@ -68,7 +72,7 @@ def test_queued_job_survives_reopen_and_has_no_body_or_lease(tmp_path: Path) -> 
     repository = _repository(tmp_path, clock)
     submission = _submission()
     queued = repository.enqueue(submission, capacity=2)
-    reopened = SQLiteIngestionJobRepository(tmp_path / "catalog.sqlite3", clock=clock)
+    reopened = PostgresIngestionJobRepository(pg_database(tmp_path / "catalog.db"), clock=clock)
     assert reopened.get(queued.job_id) == queued
     assert queued.status == "queued"
     assert queued.stage == "parsing"
@@ -95,7 +99,7 @@ def test_admission_is_bounded_even_for_concurrent_connections(tmp_path: Path) ->
     submissions = (_submission(), _submission())
 
     def enqueue(submission: IngestionJobSubmission) -> str:
-        repository = SQLiteIngestionJobRepository(tmp_path / "catalog.sqlite3", clock=clock)
+        repository = PostgresIngestionJobRepository(pg_database(tmp_path / "catalog.db"), clock=clock)
         try:
             return repository.enqueue(submission, capacity=1).status
         except IngestionQueueFullError:
@@ -117,7 +121,7 @@ def test_only_one_worker_claims_each_queued_job(tmp_path: Path) -> None:
     queued = repository.enqueue(_submission(), capacity=1)
 
     def claim(_: int) -> object:
-        store = SQLiteIngestionJobRepository(tmp_path / "catalog.sqlite3", clock=clock)
+        store = PostgresIngestionJobRepository(pg_database(tmp_path / "catalog.db"), clock=clock)
         return store.claim_next(lease_seconds=30)
 
     with ThreadPoolExecutor(max_workers=2) as workers:
@@ -292,9 +296,9 @@ def test_corrupt_published_status_fails_closed(tmp_path: Path) -> None:
     clock = Clock()
     repository = _repository(tmp_path, clock)
     queued = repository.enqueue(_submission(), capacity=1)
-    with sqlite3.connect(tmp_path / "catalog.sqlite3") as connection:
+    with pg_connect(tmp_path / "catalog.db") as connection:
         connection.execute(
-            "UPDATE ingestion_jobs SET status='succeeded' WHERE job_id=?",
+            "UPDATE ingestion_jobs SET status='succeeded' WHERE job_id=%s",
             (queued.job_id,),
         )
     with pytest.raises(IngestionJobStorageError):
@@ -336,10 +340,11 @@ def test_unpublished_lookup_fails_closed_and_parent_cannot_be_orphaned(tmp_path:
     clock = Clock()
     repository = _repository(tmp_path, clock)
     repository.enqueue(_submission(), capacity=1)
-    with sqlite3.connect(tmp_path / "catalog.sqlite3") as connection:
-        connection.execute("PRAGMA foreign_keys = ON")
-        with pytest.raises(sqlite3.IntegrityError):
-            connection.execute("DELETE FROM knowledge_bases WHERE id = 'ops'")
+    with pg_connect(tmp_path / "catalog.db") as connection:
+        connection.execute("SELECT 1")
+        with pytest.raises(psycopg.IntegrityError):
+            with connection.transaction():
+                connection.execute("DELETE FROM knowledge_bases WHERE id = 'ops'")
         connection.execute("DROP TABLE ingestion_jobs")
     with pytest.raises(IngestionJobStorageError):
         repository.unpublished_document_ids()
@@ -362,18 +367,20 @@ def test_idle_worker_probe_is_read_only_and_understands_escaped_paths(tmp_path: 
     Args:
         tmp_path: 未创建的隔离路径。
     """
-    path = tmp_path / "空 间?mode=rw" / "catalog.sqlite3"
-    assert has_pending_ingestion_jobs(path) is False
+    # Windows 文件名不允许包含问号，用井号保留"URI 特殊字符"语义。
+    special = "空 间?mode=rw" if os.name != "nt" else "空 间#mode=rw"
+    path = tmp_path / special / "catalog.db"
+    assert has_pending_ingestion_jobs(pg_database(path)) is False
     assert not path.parent.exists()
-    catalog = SQLiteKnowledgeBaseRepository(path)
-    assert has_pending_ingestion_jobs(path) is False
+    catalog = PostgresKnowledgeBaseRepository(pg_database(path))
+    assert has_pending_ingestion_jobs(pg_database(path)) is False
     catalog.create(KnowledgeBase(id="ops", name="运维"))
-    repository = SQLiteIngestionJobRepository(path)
+    repository = PostgresIngestionJobRepository(pg_database(path))
     repository.enqueue(_submission(), capacity=1)
-    before = path.stat().st_mtime_ns
-    assert has_pending_ingestion_jobs(path) is True
-    assert path.stat().st_mtime_ns == before
+    before = repository.list_knowledge_base_jobs("ops")
+    assert has_pending_ingestion_jobs(pg_database(path)) is True
+    assert repository.list_knowledge_base_jobs("ops") == before
     claim = repository.claim_next(lease_seconds=30)
     assert claim is not None
     repository.fail(claim, code="interrupted")
-    assert has_pending_ingestion_jobs(path) is False
+    assert has_pending_ingestion_jobs(pg_database(path)) is False

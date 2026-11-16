@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 from collections.abc import Iterator
 from pathlib import Path
 from threading import Event, RLock, Thread
@@ -11,7 +12,7 @@ from app.domain.documents import DocumentChunk, DocumentSegment
 from app.infrastructure.chunking.recursive import RecursiveDocumentChunker
 from app.infrastructure.indexes.bm25 import BM25Index
 from app.infrastructure.parsing.factory import ParserFactory
-from app.infrastructure.vectorstores.chroma import ChromaVectorStore
+from app.infrastructure.vectorstores.postgres import PostgresVectorStore
 from tests.helpers import FakeEmbeddingProvider
 
 
@@ -485,13 +486,13 @@ def test_ingestion_persists_chunks_in_real_chroma(tmp_path: Path) -> None:
     pipeline = IngestionPipeline(
         chunker=RecursiveDocumentChunker(chunk_size=8, chunk_overlap=2),
         embedder=FakeEmbeddingProvider(),
-        vector_store=ChromaVectorStore(database_path, "knowledge_test"),
+        vector_store=PostgresVectorStore(pg_database(database_path), "knowledge_test"),
         embedding_batch_size=2,
         parser_resolver=ParserFactory(),
     )
 
     chunks_count = pipeline.ingest(document_path, "doc-1", "notes.txt")
-    reopened = ChromaVectorStore(database_path, "knowledge_test")
+    reopened = PostgresVectorStore(pg_database(database_path), "knowledge_test")
 
     assert chunks_count > 1
     assert reopened.count() == chunks_count

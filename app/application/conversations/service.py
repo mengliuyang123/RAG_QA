@@ -36,6 +36,7 @@ from app.application.errors import EmbeddingError
 from app.application.errors import EmbeddingTimeoutError
 from app.application.errors import KnowledgeBaseStorageError
 from app.application.errors import LLMError
+from app.application.errors import LLMGenerationError
 from app.application.errors import LLMTimeoutError
 from app.application.errors import RerankerUnavailableError
 from app.application.errors import VectorStoreError
@@ -58,6 +59,7 @@ from app.domain.tracing import CommitStatus
 from app.application.tracing import TraceService
 from app.application.execution_control import StreamCancelled
 from app.application.execution_control import check_cancellation
+from app.application.conversations.generative_ui import ToolCollector, capture_tools
 
 
 class ConversationService:
@@ -290,7 +292,7 @@ class ConversationService:
                         conversation_id, batch_size=self._history_turns,
                     ),
                 )
-                result = self._agent.run(
+                result = self._run_agent(
                     conversation_id, normalized_question, history, **options,
                 )
             latency_ms = self._elapsed_ms(started_at)
@@ -355,9 +357,9 @@ class ConversationService:
                             conversation_id, batch_size=self._history_turns,
                         ),
                     )
-                    result = self._agent.run(
+                    result = self._run_agent(
                         conversation_id, normalized_question, history,
-                        capture_status, **scope_options,
+                        capture_status, _publish_tools=sink.emit, **scope_options,
                     )
             except QuestionRateLimitError:
                 raise
@@ -392,6 +394,11 @@ class ConversationService:
             except (EmbeddingError, VectorStoreError, RerankerUnavailableError):
                 sink.emit(ErrorConversationEvent(data=ErrorConversationData(
                     code="retrieval_error", message="检索服务暂时不可用",
+                )))
+                return
+            except LLMGenerationError:
+                sink.emit(ErrorConversationEvent(data=ErrorConversationData(
+                    code='generation_error', message='回答生成未能完成，请重试',
                 )))
                 return
             except LLMError:
@@ -450,6 +457,24 @@ class ConversationService:
                 )))
                 return
             sink.emit(CompleteConversationEvent(data=self._query_result(turn)))
+
+    def _run_agent(self, conversation_id, question, history, on_status=None,
+                   *, _publish_tools=None, **options) -> AgentResult:
+        collector = ToolCollector(_publish_tools)
+        with capture_tools(collector):
+            try:
+                args = (conversation_id, question, history)
+                if on_status is not None:
+                    args = (*args, on_status)
+                result = self._agent.run(*args, **options)
+            except StreamCancelled:
+                raise
+            except Exception:
+                collector.finish(None)
+                raise
+            calls = collector.finish(result)
+        # 只保存本次实际捕获的安全记录，不接收模型或 checkpoint 提供的 UI 字段。
+        return result.model_copy(update={'tool_calls': calls, 'data_blocks': []})
 
     def _save_turn(
         self, conversation_id: UUID, question: str,
@@ -562,6 +587,7 @@ class ConversationService:
             citations=turn.citations,
             latency_ms=turn.latency_ms,
             metadata=turn.metadata, created_at=turn.created_at,
+            tool_calls=turn.tool_calls, data_blocks=turn.data_blocks,
         )
 
     @staticmethod

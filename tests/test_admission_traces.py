@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """准入失败与等待必须有真实追踪，不能被统计成知识拒答。"""
 
@@ -16,7 +17,7 @@ from app.application.tracing.queries import TraceQueryService
 from app.application.tracing.service import TraceService
 from app.application.tracing.admission import admitted_question
 from app.application.admission import QuestionAdmissionController
-from app.infrastructure.persistence.traces import SQLiteTraceRepository
+from app.infrastructure.persistence.traces import PostgresTraceRepository
 from tests.http_auth import TEST_USER_ID
 from tests.test_unified_query_api import _app
 
@@ -260,7 +261,7 @@ def test_cancellation_after_admission_keeps_execution_measurement(tmp_path: Path
     Returns:
         None。
     """
-    repository = SQLiteTraceRepository(tmp_path / "traces.sqlite3")
+    repository = PostgresTraceRepository(pg_database(tmp_path / "traces.db"))
     traces = TraceService(repository)
     gate = QuestionAdmissionController(max_active=1, max_waiting=0)
     execution_id = uuid4()
@@ -298,7 +299,7 @@ def test_prepared_trace_is_bound_to_real_execution_identity(
     Returns:
         None。
     """
-    repository = SQLiteTraceRepository(tmp_path / "traces.sqlite3")
+    repository = PostgresTraceRepository(pg_database(tmp_path / "traces.db"))
     traces = TraceService(repository)
     execution_id = uuid4()
     with traces.start_execution(
@@ -337,7 +338,7 @@ def test_internal_traces_do_not_invent_legacy_admission_timings(tmp_path: Path) 
     Returns:
         None。
     """
-    repository = SQLiteTraceRepository(tmp_path / "traces.sqlite3")
+    repository = PostgresTraceRepository(pg_database(tmp_path / "traces.db"))
     traces = TraceService(repository)
     with traces.start("问题", request_id=uuid4(), entry="evaluation") as trace:
         pass

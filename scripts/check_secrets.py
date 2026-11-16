@@ -78,6 +78,8 @@ def _contains_probable_secret(relative_path: Path) -> bool:
         text = content.decode("utf-8")
     except UnicodeDecodeError:
         return False
+    # Windows 文本常带 CRLF，统一行尾避免行末锚点失配。
+    text = text.replace("\r\n", "\n")
     for match in ASSIGNMENT_PATTERN.finditer(text):
         value = _unquote(match.group(1).strip())
         if not _is_safe_template(value):

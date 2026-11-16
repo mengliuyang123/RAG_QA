@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """以输入预算选择历史，不修改存储原文或截断用户问题。"""
 
@@ -5,7 +6,8 @@ from datetime import UTC
 from datetime import datetime
 from collections.abc import Iterator
 from pathlib import Path
-import sqlite3
+import psycopg
+from app.infrastructure.persistence.database import record_row, Record
 from uuid import uuid4
 
 import httpx
@@ -17,8 +19,8 @@ from app.domain.conversations import AgentResult
 from app.domain.conversations import AnswerMode
 from app.domain.conversations import ConversationTurn
 from app.domain.errors import HistoryContextTooLargeError
-from app.infrastructure.conversations.sqlite_repository import (
-    SQLiteConversationRepository,
+from app.infrastructure.conversations.postgres_repository import (
+    PostgresConversationRepository,
 )
 from app.infrastructure.generation.token_counting import (
     Utf8TokenUpperBoundCounter,
@@ -130,7 +132,7 @@ def test_repository_reverse_paging_and_window_do_not_change_stored_text(
     Args:
         tmp_path: 隔离会话数据库。
     """
-    repository = SQLiteConversationRepository(tmp_path / "history.db")
+    repository = PostgresConversationRepository(pg_database(tmp_path / "history.db"))
     conversation = repository.create()
     for index in range(9):
         repository.save_turn(
@@ -141,10 +143,10 @@ def test_repository_reverse_paging_and_window_do_not_change_stored_text(
             ),
             1.0,
         )
-    # 相同时间戳必须用 rowid 继续分页，否则会跳过整页历史。
-    with sqlite3.connect(tmp_path / "history.db") as connection:
+    # 相同时间戳必须用 sequence_id 继续分页，否则会跳过整页历史。
+    with pg_connect(tmp_path / "history.db") as connection:
         connection.execute(
-            "UPDATE conversation_turns SET created_at = ?",
+            "UPDATE conversation_turns SET created_at = %s",
             ("2026-10-23T00:00:00+00:00",),
         )
     reverse = list(repository.iter_turns_reverse(conversation.id, batch_size=2))
@@ -185,7 +187,7 @@ async def test_query_and_stream_reject_oversized_context_before_model_call(
     """
     agent = _FakeAgent()
     service = ConversationService(
-        repository=SQLiteConversationRepository(tmp_path / "history.db"),
+        repository=PostgresConversationRepository(pg_database(tmp_path / "history.db")),
         agent=agent, checkpoint_store=_FakeCheckpointStore(),
         history_window=HistoryWindowBuilder(
             counter=_CharacterCounter(), token_budget=4,

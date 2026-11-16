@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """真实目录、源文件和任务登记的入队应用边界。"""
 
@@ -14,14 +15,14 @@ from app.application.errors import KnowledgeBaseNotFoundError
 from app.application.errors import UnsupportedFileTypeError
 from app.application.ingestion.jobs import IngestionJobService
 from app.infrastructure.parsing.factory import ParserFactory
-from app.infrastructure.persistence.ingestion_jobs import SQLiteIngestionJobRepository
+from app.infrastructure.persistence.ingestion_jobs import PostgresIngestionJobRepository
 from app.infrastructure.persistence.ingestion_sources import LocalIngestionSources
-from app.infrastructure.persistence.knowledge_bases import SQLiteKnowledgeBaseRepository
+from app.infrastructure.persistence.knowledge_bases import PostgresKnowledgeBaseRepository
 
 
 def _service(tmp_path: Path, *, capacity: int = 1):
-    catalog = SQLiteKnowledgeBaseRepository(tmp_path / "catalog.sqlite3")
-    jobs = SQLiteIngestionJobRepository(tmp_path / "catalog.sqlite3")
+    catalog = PostgresKnowledgeBaseRepository(pg_database(tmp_path / "catalog.db"))
+    jobs = PostgresIngestionJobRepository(pg_database(tmp_path / "catalog.db"))
     service = IngestionJobService(
         catalog, jobs, LocalIngestionSources(tmp_path / "docs"), ParserFactory(),
         max_upload_size=32, capacity=capacity,
@@ -94,8 +95,8 @@ def test_unknown_commit_outcome_keeps_source_for_possible_committed_job(
     service, jobs = _service(tmp_path)
     original = jobs.enqueue
 
-    def lost_response(submission, *, capacity: int):
-        original(submission, capacity=capacity)
+    def lost_response(submission, *, capacity: int, **options):
+        original(submission, capacity=capacity, **options)
         raise IngestionJobStorageError("commit response lost")
 
     monkeypatch.setattr(jobs, "enqueue", lost_response)

@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """验证 JUDGE_* 配置的继承规则，以及快速通道和 Agent 通道都使用裁判配置。"""
 
@@ -99,12 +100,12 @@ def test_fast_lane_quality_evaluator_uses_judge_settings(tmp_path: Path) -> None
 
     settings = _settings(
         judge_model="strong-model", judge_reasoning_effort="low",
-        chroma_path=tmp_path / "chroma", docs_path=tmp_path / "docs",
-        knowledge_base_db_path=tmp_path / "kb.sqlite3",
-        conversation_db_path=tmp_path / "conv.sqlite3",
-        agent_checkpoint_db_path=tmp_path / "ckpt.sqlite3",
-        trace_db_path=tmp_path / "trace.sqlite3",
-        auth_db_path=tmp_path / "auth.sqlite3",
+        artifacts_path=tmp_path / "chroma", docs_path=tmp_path / "docs",
+        knowledge_base_db_path=tmp_path / "kb.db",
+        conversation_db_path=tmp_path / "conv.db",
+        agent_checkpoint_db_path=tmp_path / "ckpt.db",
+        trace_db_path=tmp_path / "trace.db",
+        auth_db_path=tmp_path / "auth.db",
     )
     container = build_application_container(
         settings, factories=AdapterFactories(quality_evaluator=record),

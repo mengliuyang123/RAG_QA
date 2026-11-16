@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
-"""使用独立 SQLite 数据库持久化正式多轮会话历史。"""
+"""使用独立 Postgres 数据库持久化正式多轮会话历史。"""
 
-import sqlite3
+import json
+import psycopg
+from app.infrastructure.persistence.database import Database, Record
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -35,48 +37,10 @@ from app.infrastructure.conversations.pagination import decode_cursor
 from app.infrastructure.conversations.pagination import encode_cursor
 
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS conversations (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    status TEXT NOT NULL CHECK(status IN ('active', 'deleting')),
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    turns_count INTEGER NOT NULL DEFAULT 0 CHECK(turns_count >= 0)
-);
-
-CREATE TABLE IF NOT EXISTS conversation_turns (
-    id TEXT PRIMARY KEY,
-    conversation_id TEXT NOT NULL,
-    user_message TEXT NOT NULL,
-    assistant_message TEXT NOT NULL,
-    answer_mode TEXT NOT NULL CHECK(answer_mode IN ('direct', 'retrieval')),
-    retrieval_calls INTEGER NOT NULL CHECK(retrieval_calls BETWEEN 0 AND 3),
-    latency_ms REAL NOT NULL CHECK(latency_ms >= 0),
-    created_at TEXT NOT NULL,
-    FOREIGN KEY(conversation_id) REFERENCES conversations(id)
-        ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS idx_conversation_turns_conversation
-    ON conversation_turns(conversation_id, created_at);
-
-CREATE TABLE IF NOT EXISTS turn_citations (
-    turn_id TEXT NOT NULL,
-    position INTEGER NOT NULL CHECK(position >= 1),
-    doc_id TEXT NOT NULL,
-    filename TEXT NOT NULL,
-    page INTEGER,
-    chunk_text TEXT NOT NULL,
-    PRIMARY KEY(turn_id, position),
-    FOREIGN KEY(turn_id) REFERENCES conversation_turns(id)
-        ON DELETE CASCADE
-);
-"""
 
 
-class SQLiteConversationRepository:
-    """把正式会话历史存入参数化、事务化的 SQLite 表。"""
+class PostgresConversationRepository:
+    """把正式会话历史存入参数化、事务化的 Postgres 表。"""
 
     def put_feedback(
         self, turn_id: UUID, owner_id: UUID, feedback: TurnFeedback,
@@ -93,24 +57,24 @@ class SQLiteConversationRepository:
         """
         try:
             with self._connect() as connection:
-                connection.execute("BEGIN IMMEDIATE")
+                connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || 'business_write', 0))")
                 current = self._owned_feedback_row(connection, turn_id, owner_id)
                 normalized = feedback if feedback.rating is not None else TurnFeedback(rating=None)
                 if self._feedback_from_json(current["feedback_json"]) == normalized:
                     return
                 connection.execute(
-                    """UPDATE conversation_turns SET feedback_json = ?,
+                    """UPDATE conversation_turns SET feedback_json = %s,
                         feedback_revision = feedback_revision + 1,
-                        feedback_updated_at = ?, feedback_triage = NULL,
+                        feedback_updated_at = %s, feedback_triage = NULL,
                         feedback_triaged_by = NULL, feedback_triaged_at = NULL
-                    WHERE id = ?""",
+                    WHERE id = %s""",
                     (
                         feedback.model_dump_json() if feedback.rating is not None else None,
                         datetime.now(UTC).isoformat(),
                         str(turn_id),
                     ),
                 )
-        except sqlite3.Error as exc:
+        except psycopg.Error as exc:
             raise ConversationStorageError("轮次反馈保存失败") from exc
 
     def get_feedback(self, turn_id: UUID, owner_id: UUID) -> TurnFeedback:
@@ -124,20 +88,20 @@ class SQLiteConversationRepository:
             当前反馈，无反馈时rating为None。
         """
         try:
-            with self._connect() as connection:
+            with self._connect(read_only=True) as connection:
                 row = self._owned_feedback_row(connection, turn_id, owner_id)
                 return self._feedback_from_json(row["feedback_json"])
-        except (sqlite3.Error, ValueError) as exc:
+        except (psycopg.Error, ValueError) as exc:
             raise ConversationStorageError("轮次反馈读取失败") from exc
 
     @staticmethod
     def _owned_feedback_row(
-        connection: sqlite3.Connection, turn_id: UUID, owner_id: UUID,
-    ) -> sqlite3.Row:
+        connection: psycopg.Connection, turn_id: UUID, owner_id: UUID,
+    ) -> Record:
         row = connection.execute(
             """SELECT t.feedback_json, t.feedback_revision FROM conversation_turns t
             JOIN conversations c ON c.id = t.conversation_id
-            WHERE t.id = ? AND c.owner_id = ? AND c.status = 'active'""",
+            WHERE t.id = %s AND c.owner_id = %s AND c.status = 'active'""",
             (str(turn_id), str(owner_id)),
         ).fetchone()
         if row is None:
@@ -150,17 +114,8 @@ class SQLiteConversationRepository:
             return TurnFeedback(rating=None)
         return TurnFeedback.model_validate_json(encoded)
 
-    def __init__(
-        self,
-        path: Path,
-        busy_timeout_ms: int = 5_000,
-    ) -> None:
-        if busy_timeout_ms < 1:
-            raise ValueError("busy_timeout_ms 必须大于零")
-        self._path = path
-        self._busy_timeout_ms = busy_timeout_ms
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._initialize()
+    def __init__(self, database: Database) -> None:
+        self._database = database
 
     def create(
         self, kb_scope: KnowledgeScope | None = None, *,
@@ -185,7 +140,7 @@ class SQLiteConversationRepository:
                     INSERT INTO conversations(
                         id, title, status, created_at, updated_at,
                         turns_count, kb_scope_json, owner_id
-                    ) VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+                    ) VALUES (%s, %s, %s, %s, %s, 0, %s, %s)
                     """,
                     (
                         str(conversation_id),
@@ -197,7 +152,7 @@ class SQLiteConversationRepository:
                         str(owner_id) if owner_id is not None else None,
                     ),
                 )
-        except sqlite3.Error as exc:
+        except psycopg.Error as exc:
             raise ConversationStorageError("会话存储操作失败") from exc
         return Conversation(
             id=conversation_id,
@@ -230,17 +185,17 @@ class SQLiteConversationRepository:
         """
         try:
             with self._connect() as connection:
-                connection.execute("BEGIN IMMEDIATE")
+                connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || 'business_write', 0))")
                 row = self._conversation_row(connection, conversation_id)
                 if row["status"] == ConversationStatus.DELETING.value:
                     raise ConversationDeletingError("会话正在删除")
                 connection.execute(
                     """
                     UPDATE conversations
-                    SET title = COALESCE(?, title),
-                        kb_scope_json = COALESCE(?, kb_scope_json),
-                        updated_at = ?
-                    WHERE id = ?
+                    SET title = COALESCE(%s, title),
+                        kb_scope_json = COALESCE(%s, kb_scope_json),
+                        updated_at = %s
+                    WHERE id = %s
                     """,
                     (
                         title,
@@ -252,7 +207,7 @@ class SQLiteConversationRepository:
                 return self._summary_from_row(
                     self._conversation_row(connection, conversation_id),
                 )
-        except (sqlite3.Error, ValueError) as exc:
+        except (psycopg.Error, ValueError) as exc:
             raise ConversationStorageError("会话摘要修改失败") from exc
 
     def list_active(
@@ -267,14 +222,14 @@ class SQLiteConversationRepository:
             属于指定用户的active摘要。
         """
         try:
-            with self._connect() as connection:
+            with self._connect(read_only=True) as connection:
                 rows = connection.execute(
                     """
                     SELECT id, title, status, created_at, updated_at,
                            turns_count, kb_scope_json, owner_id
                     FROM conversations
-                    WHERE status = ? AND (? IS NULL OR owner_id = ?)
-                    ORDER BY updated_at DESC, rowid DESC
+                    WHERE status = %s AND (%s::text IS NULL OR owner_id = %s)
+                    ORDER BY updated_at DESC, sequence_id DESC
                     """,
                     (
                         ConversationStatus.ACTIVE.value,
@@ -282,22 +237,22 @@ class SQLiteConversationRepository:
                         str(owner_id) if owner_id is not None else None,
                     ),
                 ).fetchall()
-        except sqlite3.Error as exc:
+        except psycopg.Error as exc:
             raise ConversationStorageError("会话存储操作失败") from exc
         return [self._summary_from_row(row) for row in rows]
 
     def get(self, conversation_id: UUID) -> Conversation:
         try:
-            with self._connect() as connection:
+            with self._connect(read_only=True) as connection:
                 row = self._conversation_row(connection, conversation_id)
                 turn_rows = connection.execute(
                     """
-                    SELECT rowid AS turn_rowid, id, conversation_id,
+                    SELECT sequence_id AS turn_rowid, id, conversation_id,
                            user_message, assistant_message, answer_mode,
                            retrieval_calls, latency_ms, created_at, metadata_json,
-                           feedback_json
+                           feedback_json, tool_calls, data_blocks
                     FROM conversation_turns
-                    WHERE conversation_id = ?
+                    WHERE conversation_id = %s
                     ORDER BY created_at ASC, turn_rowid ASC
                     """,
                     (str(conversation_id),),
@@ -308,7 +263,7 @@ class SQLiteConversationRepository:
                 ]
         except ConversationNotFoundError:
             raise
-        except sqlite3.Error as exc:
+        except psycopg.Error as exc:
             raise ConversationStorageError("会话存储操作失败") from exc
         summary = self._summary_from_row(row)
         return Conversation(**summary.model_dump(), turns=turns)
@@ -331,21 +286,21 @@ class SQLiteConversationRepository:
         clause = ""
         parameters: list[object] = [str(owner_id)]
         if position is not None:
-            clause = " AND (updated_at, rowid) < (?, ?)"
+            clause = " AND (updated_at, sequence_id) < (%s, %s)"
             parameters.extend([position.timestamp, position.rowid])
         parameters.append(limit + 1)
         try:
-            with self._connect() as connection:
-                connection.execute("BEGIN")
+            with self._connect(read_only=True) as connection:
+                connection.execute("SELECT 1")
                 total = connection.execute(
                     "SELECT COUNT(*) FROM conversations "
-                    "WHERE owner_id = ? AND status = 'active'",
+                    "WHERE owner_id = %s AND status = 'active'",
                     (str(owner_id),),
                 ).fetchone()[0]
                 rows = connection.execute(
-                    "SELECT rowid AS page_rowid, * FROM conversations "
-                    "WHERE owner_id = ? AND status = 'active'" + clause
-                    + " ORDER BY updated_at DESC, rowid DESC LIMIT ?",
+                    "SELECT sequence_id AS page_rowid, * FROM conversations "
+                    "WHERE owner_id = %s AND status = 'active'" + clause
+                    + " ORDER BY updated_at DESC, sequence_id DESC LIMIT %s",
                     parameters,
                 ).fetchall()
                 next_cursor = None
@@ -358,7 +313,7 @@ class SQLiteConversationRepository:
                 return ConversationPage(
                     conversations=items, total=total, next_cursor=next_cursor,
                 )
-        except (sqlite3.Error, ValueError) as error:
+        except (psycopg.Error, ValueError) as error:
             raise ConversationStorageError("会话分页读取失败") from error
 
     def get_page(
@@ -378,8 +333,8 @@ class SQLiteConversationRepository:
         """
         scope = f"turns:{owner_id}:{conversation_id}"
         try:
-            with self._connect() as connection:
-                connection.execute("BEGIN")
+            with self._connect(read_only=True) as connection:
+                connection.execute("SELECT 1")
                 row = self._conversation_row(connection, conversation_id)
                 if row["owner_id"] != str(owner_id):
                     raise ConversationNotFoundError("会话不存在")
@@ -387,14 +342,14 @@ class SQLiteConversationRepository:
                 clause = ""
                 parameters: list[object] = [str(conversation_id)]
                 if position is not None:
-                    clause = " AND (created_at, rowid) < (?, ?)"
+                    clause = " AND (created_at, sequence_id) < (%s, %s)"
                     parameters.extend([position.timestamp, position.rowid])
                 parameters.append(limit + 1)
                 # 多取一条仅限ID和排序键，不读取不在本页的正文。
                 keys = connection.execute(
-                    "SELECT rowid AS page_rowid, id, created_at "
-                    "FROM conversation_turns WHERE conversation_id = ?"
-                    + clause + " ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                    "SELECT sequence_id AS page_rowid, id, created_at "
+                    "FROM conversation_turns WHERE conversation_id = %s"
+                    + clause + " ORDER BY created_at DESC, sequence_id DESC LIMIT %s",
                     parameters,
                 ).fetchall()
                 next_cursor = None
@@ -411,19 +366,19 @@ class SQLiteConversationRepository:
                 )
         except InvalidConversationCursorError:
             raise
-        except (sqlite3.Error, ValueError) as error:
+        except (psycopg.Error, ValueError) as error:
             raise ConversationStorageError("会话历史分页读取失败") from error
 
     def _page_turns(
-        self, connection: sqlite3.Connection, keys: list[sqlite3.Row],
+        self, connection: psycopg.Connection, keys: list[Record],
     ) -> list[ConversationTurn]:
         if not keys:
             return []
         ids = [row["id"] for row in keys]
-        placeholders = ",".join("?" for _ in ids)
+        placeholders = ",".join("%s" for _ in ids)
         rows = connection.execute(
             "SELECT * FROM conversation_turns "
-            f"WHERE id IN ({placeholders}) ORDER BY created_at ASC, rowid ASC",
+            f"WHERE id IN ({placeholders}) ORDER BY created_at ASC, sequence_id ASC",
             ids,
         ).fetchall()
         citation_rows = connection.execute(
@@ -431,7 +386,7 @@ class SQLiteConversationRepository:
             "ORDER BY COALESCE(citation_order, position) ASC",
             ids,
         ).fetchall()
-        grouped: dict[str, list[sqlite3.Row]] = {}
+        grouped: dict[str, list[Record]] = {}
         for citation in citation_rows:
             grouped.setdefault(citation["turn_id"], []).append(citation)
         turns = []
@@ -451,12 +406,12 @@ class SQLiteConversationRepository:
             不包含历史及引用的会话摘要。
         """
         try:
-            with self._connect() as connection:
+            with self._connect(read_only=True) as connection:
                 row = self._conversation_row(connection, conversation_id)
                 return self._summary_from_row(row)
         except ConversationNotFoundError:
             raise
-        except (sqlite3.Error, ValueError) as exc:
+        except (psycopg.Error, ValueError) as exc:
             raise ConversationStorageError("会话摘要读取失败") from exc
 
     def recent_turns(
@@ -467,19 +422,19 @@ class SQLiteConversationRepository:
         if limit < 1:
             raise ValueError("limit 必须大于零")
         try:
-            with self._connect() as connection:
+            with self._connect(read_only=True) as connection:
                 self._conversation_row(connection, conversation_id)
                 rows = connection.execute(
                     """
                     SELECT * FROM (
-                        SELECT rowid AS turn_rowid, id, conversation_id,
+                        SELECT sequence_id AS turn_rowid, id, conversation_id,
                                user_message, assistant_message, answer_mode,
                                retrieval_calls, latency_ms, created_at, metadata_json,
-                               feedback_json
+                               feedback_json, tool_calls, data_blocks
                         FROM conversation_turns
-                        WHERE conversation_id = ?
+                        WHERE conversation_id = %s
                         ORDER BY created_at DESC, turn_rowid DESC
-                        LIMIT ?
+                        LIMIT %s
                     )
                     ORDER BY created_at ASC, turn_rowid ASC
                     """,
@@ -490,13 +445,13 @@ class SQLiteConversationRepository:
                 ]
         except ConversationNotFoundError:
             raise
-        except sqlite3.Error as exc:
+        except psycopg.Error as exc:
             raise ConversationStorageError("会话存储操作失败") from exc
 
     def iter_turns_reverse(
         self, conversation_id: UUID, batch_size: int = 32,
     ) -> Iterator[ConversationTurn]:
-        """以时间和 rowid 游标分页，连接在向外 yield 前已关闭。
+        """以时间和 sequence_id 游标分页，连接在向外 yield 前已关闭。
 
         Args:
             conversation_id: 正式会话标识。
@@ -512,24 +467,24 @@ class SQLiteConversationRepository:
             condition = ""
             parameters: list[object] = [str(conversation_id)]
             if cursor is not None:
-                condition = " AND (created_at, rowid) < (?, ?)"
+                condition = " AND (created_at, sequence_id) < (%s, %s)"
                 parameters.extend(cursor)
             parameters.append(batch_size)
             try:
-                with self._connect() as connection:
+                with self._connect(read_only=True) as connection:
                     self._conversation_row(connection, conversation_id)
                     # condition 仅来自固定字符串；所有用户值均参数化。
                     rows = connection.execute(
-                        "SELECT rowid AS turn_rowid, * "
-                        "FROM conversation_turns WHERE conversation_id = ?"
+                        "SELECT sequence_id AS turn_rowid, * "
+                        "FROM conversation_turns WHERE conversation_id = %s"
                         + condition
-                        + " ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                        + " ORDER BY created_at DESC, sequence_id DESC LIMIT %s",
                         parameters,
                     ).fetchall()
                     page = [self._turn_from_row(connection, row) for row in rows]
             except ConversationNotFoundError:
                 raise
-            except (sqlite3.Error, ValueError) as exc:
+            except (psycopg.Error, ValueError) as exc:
                 raise ConversationStorageError("会话历史读取失败") from exc
             if not rows:
                 return
@@ -553,11 +508,11 @@ class SQLiteConversationRepository:
             raise ValueError("latency_ms 不得小于零")
         turn_id = uuid4()
         created_at = datetime.now(UTC)
-        connection: sqlite3.Connection | None = None
+        connection: psycopg.Connection | None = None
         try:
             connection = self._new_connection()
             check_cancellation()
-            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || 'business_write', 0))")
             check_cancellation()
             conversation_row = self._conversation_row(
                 connection,
@@ -570,8 +525,8 @@ class SQLiteConversationRepository:
                 INSERT INTO conversation_turns(
                     id, conversation_id, user_message, assistant_message,
                     answer_mode, retrieval_calls, latency_ms, created_at,
-                    metadata_json, trace_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    metadata_json, trace_id, tool_calls, data_blocks
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)
                 """,
                 (
                     str(turn_id),
@@ -584,6 +539,8 @@ class SQLiteConversationRepository:
                     created_at.isoformat(),
                     result.metadata.model_dump_json() if result.metadata else None,
                     result.metadata.trace_id if result.metadata else None,
+                    json.dumps([c.model_dump(mode="json") for c in result.tool_calls], ensure_ascii=False),
+                    json.dumps([d.model_dump(mode="json") for d in result.data_blocks], ensure_ascii=False),
                 ),
             )
             self._insert_citations(connection, turn_id, result.citations)
@@ -591,11 +548,11 @@ class SQLiteConversationRepository:
                 """
                 UPDATE conversations
                 SET title = CASE
-                        WHEN turns_count = 0 AND title = '新对话' THEN ?
+                        WHEN turns_count = 0 AND title = '新对话' THEN %s
                         ELSE title END,
-                    updated_at = ?,
+                    updated_at = %s,
                     turns_count = turns_count + 1
-                WHERE id = ?
+                WHERE id = %s
                 """,
                 (
                     normalized_question[:50],
@@ -609,13 +566,13 @@ class SQLiteConversationRepository:
             if connection is not None:
                 connection.rollback()
             raise
-        except (sqlite3.Error, ValueError) as exc:
+        except (psycopg.Error, ValueError) as exc:
             if connection is not None:
                 connection.rollback()
             raise ConversationStorageError("会话存储操作失败") from exc
         finally:
             if connection is not None:
-                connection.close()
+                self._database.release(connection)
         return ConversationTurn(
             id=turn_id,
             conversation_id=conversation_id,
@@ -624,6 +581,7 @@ class SQLiteConversationRepository:
             answer_mode=result.answer_mode,
             retrieval_calls=result.retrieval_calls,
             citations=result.citations,
+            tool_calls=result.tool_calls, data_blocks=result.data_blocks,
             latency_ms=latency_ms,
             created_at=created_at,
             metadata=result.metadata or self._legacy_metadata(
@@ -635,7 +593,7 @@ class SQLiteConversationRepository:
         try:
             with self._connect() as connection:
                 cursor = connection.execute(
-                    "UPDATE conversations SET status = ? WHERE id = ?",
+                    "UPDATE conversations SET status = %s WHERE id = %s",
                     (
                         ConversationStatus.DELETING.value,
                         str(conversation_id),
@@ -645,121 +603,48 @@ class SQLiteConversationRepository:
                     raise ConversationNotFoundError("会话不存在")
         except ConversationNotFoundError:
             raise
-        except sqlite3.Error as exc:
+        except psycopg.Error as exc:
             raise ConversationStorageError("会话存储操作失败") from exc
 
     def delete(self, conversation_id: UUID) -> None:
         try:
             with self._connect() as connection:
                 cursor = connection.execute(
-                    "DELETE FROM conversations WHERE id = ?",
+                    "DELETE FROM conversations WHERE id = %s",
                     (str(conversation_id),),
                 )
                 if cursor.rowcount == 0:
                     raise ConversationNotFoundError("会话不存在")
         except ConversationNotFoundError:
             raise
-        except sqlite3.Error as exc:
+        except psycopg.Error as exc:
             raise ConversationStorageError("会话存储操作失败") from exc
 
-    def _initialize(self) -> None:
-        try:
-            with self._connect() as connection:
-                connection.execute("PRAGMA journal_mode = WAL")
-                connection.executescript(_SCHEMA)
-                connection.execute("BEGIN IMMEDIATE")
-                additions = {
-                    "conversations": {
-                        "kb_scope_json": "TEXT", "owner_id": "TEXT",
-                    },
-                    "conversation_turns": {
-                        "metadata_json": "TEXT", "feedback_json": "TEXT",
-                        "trace_id": "TEXT",
-                        "feedback_revision": "INTEGER NOT NULL DEFAULT 0",
-                        "feedback_updated_at": "TEXT",
-                        "feedback_triage": "TEXT",
-                        "feedback_triaged_by": "TEXT",
-                        "feedback_triaged_at": "TEXT",
-                    },
-                    "turn_citations": {
-                        "chunk_id": "TEXT", "kb_id": "TEXT DEFAULT 'default'",
-                        "doc_updated_at": "TEXT", "citation_order": "INTEGER",
-                    },
-                }
-                backfill_trace_ids = False
-                for table, columns in additions.items():
-                    existing = {
-                        row["name"] for row in connection.execute(f"PRAGMA table_info({table})")
-                    }
-                    for name, definition in columns.items():
-                        if name not in existing:
-                            connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
-                            if table == "conversation_turns" and name == "trace_id":
-                                backfill_trace_ids = True
-                if backfill_trace_ids:
-                    # 旧历史已有真实trace关联，只提取索引列，不重跑模型或改写正文。
-                    connection.execute("""
-                        UPDATE conversation_turns SET trace_id =
-                            CASE WHEN json_valid(metadata_json) THEN
-                                CASE WHEN json_type(metadata_json, '$.trace_id') = 'text'
-                                THEN json_extract(metadata_json, '$.trace_id') END
-                            END
-                        WHERE metadata_json IS NOT NULL
-                    """)
-                connection.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_turns_trace "
-                    "ON conversation_turns(trace_id)"
-                )
-                connection.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_citations_document_chunk "
-                    "ON turn_citations(doc_id, chunk_id, turn_id)"
-                )
-                connection.execute(
-                    "UPDATE conversation_turns SET feedback_revision = 1 "
-                    "WHERE feedback_json IS NOT NULL AND feedback_revision = 0"
-                )
-                connection.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_turns_feedback_time "
-                    "ON conversation_turns(COALESCE(feedback_updated_at, created_at), id) "
-                    "WHERE feedback_json IS NOT NULL"
-                )
-                connection.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_conversations_owner "
-                    "ON conversations(owner_id, status, updated_at)"
-                )
-        except sqlite3.Error as exc:
-            raise ConversationStorageError("会话存储初始化失败") from exc
 
-    def _new_connection(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(
-            self._path,
-            timeout=self._busy_timeout_ms / 1_000,
-        )
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute(f"PRAGMA busy_timeout = {self._busy_timeout_ms}")
-        return connection
+    def _new_connection(self) -> psycopg.Connection:
+        return self._database.acquire()
 
     @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
-        connection = self._new_connection()
+    def _connect(self, *, read_only: bool = False) -> Iterator[psycopg.Connection]:
         try:
-            with connection:
+            with self._database.connection(read_only=read_only) as connection:
+                if not read_only:
+                    connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || 'business_write', 0))")
                 yield connection
-        finally:
-            connection.close()
+        except psycopg.Error as exc:
+            raise ConversationStorageError("PostgreSQL 仓储操作失败") from exc
 
     @staticmethod
     def _conversation_row(
-        connection: sqlite3.Connection,
+        connection: psycopg.Connection,
         conversation_id: UUID,
-    ) -> sqlite3.Row:
+    ) -> Record:
         row = connection.execute(
             """
             SELECT id, title, status, created_at, updated_at, turns_count,
                    kb_scope_json, owner_id
             FROM conversations
-            WHERE id = ?
+            WHERE id = %s
             """,
             (str(conversation_id),),
         ).fetchone()
@@ -768,7 +653,7 @@ class SQLiteConversationRepository:
         return row
 
     @staticmethod
-    def _summary_from_row(row: sqlite3.Row) -> ConversationSummary:
+    def _summary_from_row(row: Record) -> ConversationSummary:
         return ConversationSummary(
             id=UUID(row["id"]),
             title=row["title"],
@@ -785,9 +670,9 @@ class SQLiteConversationRepository:
 
     def _turn_from_row(
         self,
-        connection: sqlite3.Connection,
-        row: sqlite3.Row,
-        *, citation_rows: Sequence[sqlite3.Row] | None = None,
+        connection: psycopg.Connection,
+        row: Record,
+        *, citation_rows: Sequence[Record] | None = None,
     ) -> ConversationTurn:
         if citation_rows is None:
             citation_rows = connection.execute(
@@ -795,7 +680,7 @@ class SQLiteConversationRepository:
                 SELECT position, doc_id, filename, page, chunk_text,
                        chunk_id, kb_id, doc_updated_at
                 FROM turn_citations
-                WHERE turn_id = ?
+                WHERE turn_id = %s
                 ORDER BY COALESCE(citation_order, position) ASC
                 """,
                 (row["id"],),
@@ -833,6 +718,7 @@ class SQLiteConversationRepository:
             latency_ms=row["latency_ms"],
             created_at=datetime.fromisoformat(row["created_at"]),
             metadata=metadata,
+            tool_calls=row["tool_calls"] or [], data_blocks=row["data_blocks"] or [],
         )
 
     @staticmethod
@@ -860,16 +746,16 @@ class SQLiteConversationRepository:
 
     @staticmethod
     def _insert_citations(
-        connection: sqlite3.Connection,
+        connection: psycopg.Connection,
         turn_id: UUID,
         citations: Sequence[TurnCitation],
     ) -> None:
-        connection.executemany(
+        connection.cursor().executemany(
             """
             INSERT INTO turn_citations(
                 turn_id, position, doc_id, filename, page, chunk_text,
                 chunk_id, kb_id, doc_updated_at, citation_order
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             [
                 (

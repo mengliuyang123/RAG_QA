@@ -1,9 +1,11 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """真实Cookie、SQLite和HTTP的有限会话分页与历史隔离。"""
 
 import base64
 import json
-import sqlite3
+import psycopg
+from app.infrastructure.persistence.database import record_row, Record
 from contextlib import AsyncExitStack
 from pathlib import Path
 from uuid import UUID
@@ -14,7 +16,7 @@ import pytest
 from app.domain.conversations import AgentResult
 from app.domain.conversations import TurnCitation
 from app.domain.feedback import TurnFeedback
-from app.infrastructure.conversations.sqlite_repository import SQLiteConversationRepository
+from app.infrastructure.conversations.postgres_repository import PostgresConversationRepository
 from tests.test_shares_api import _client
 from tests.test_unified_query_api import _app
 
@@ -38,13 +40,13 @@ async def test_list_pages_keep_owner_total_and_tied_order(
                 body = (await alice.post("/api/conversations")).json()
                 ids.append(body["id"])
             await bob.post("/api/conversations")
-            with sqlite3.connect(tmp_path / "conversations.sqlite3") as db:
+            with pg_connect(tmp_path / "conversations.db") as db:
                 db.execute(
-                    "UPDATE conversations SET updated_at = ?",
+                    "UPDATE conversations SET updated_at = %s",
                     ("2026-10-28T01:00:00+00:00",),
                 )
                 db.execute(
-                    "UPDATE conversations SET status = 'deleting' WHERE id = ?",
+                    "UPDATE conversations SET status = 'deleting' WHERE id = %s",
                     (ids[0],),
                 )
             response = await alice.get("/api/conversations?limit=2")
@@ -91,8 +93,8 @@ async def test_turn_pages_are_bounded_and_preserve_citations_feedback(
             body = (await alice.post("/api/conversations")).json()
             conversation_id = UUID(body["id"])
             path = "/api/conversations/" + body["id"]
-            repository = SQLiteConversationRepository(
-                tmp_path / "conversations.sqlite3",
+            repository = PostgresConversationRepository(
+                pg_database(tmp_path / "conversations.db"),
             )
             turns = []
             for index in range(5):
@@ -107,14 +109,14 @@ async def test_turn_pages_are_bounded_and_preserve_citations_feedback(
                 ))
             owner = UUID((await alice.get("/api/me")).json()["id"])
             repository.put_feedback(turns[-1].id, owner, TurnFeedback(rating="up"))
-            with sqlite3.connect(tmp_path / "conversations.sqlite3") as db:
+            with pg_connect(tmp_path / "conversations.db") as db:
                 db.execute(
-                    "UPDATE conversation_turns SET created_at = ?",
+                    "UPDATE conversation_turns SET created_at = %s",
                     ("2026-10-28T01:00:00+00:00",),
                 )
                 db.execute(
                     "UPDATE conversation_turns SET metadata_json = 'broken' "
-                    "WHERE id = ?", (str(turns[0].id),),
+                    "WHERE id = %s", (str(turns[0].id),),
                 )
             first = await alice.get(path, params={"turns_limit": 2})
             assert first.status_code == 200
@@ -134,10 +136,10 @@ async def test_turn_pages_are_bounded_and_preserve_citations_feedback(
             assert [item["user_message"] for item in second.json()["turns"]] == [
                 "question-1", "question-2",
             ]
-            with sqlite3.connect(tmp_path / "conversations.sqlite3") as db:
+            with pg_connect(tmp_path / "conversations.db") as db:
                 db.execute(
                     "UPDATE conversation_turns SET metadata_json = NULL "
-                    "WHERE id = ?", (str(turns[0].id),),
+                    "WHERE id = %s", (str(turns[0].id),),
                 )
             last = (await alice.get(path, params={
                 "turns_cursor": second.json()["turns_next_cursor"],
@@ -212,7 +214,7 @@ async def test_cursor_integer_overflow_is_validation_error(
             await alice.post("/api/conversations")
             page = (await alice.get("/api/conversations?limit=1")).json()
             encoded = json.loads(base64.urlsafe_b64decode(page["next_cursor"]))
-            encoded["rowid"] = 2 ** 64
+            encoded["sequence_id"] = 2 ** 64
             cursor = base64.urlsafe_b64encode(json.dumps(encoded).encode()).decode()
             response = await alice.get("/api/conversations", params={
                 "cursor": cursor,

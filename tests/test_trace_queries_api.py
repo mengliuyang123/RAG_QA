@@ -166,7 +166,8 @@ async def test_trace_read_storage_failure_is_typed_503(tmp_path: Path) -> None:
     """
     app, _, _ = _app(tmp_path)
     try:
-        app.state.container.settings.conversation_db_path.mkdir()
+        with app.state.container.database.connection() as connection:
+            connection.execute('DROP TABLE conversation_turns CASCADE')
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/api/admin/traces")
             assert response.status_code == 503

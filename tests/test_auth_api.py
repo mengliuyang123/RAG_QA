@@ -212,12 +212,12 @@ async def test_cookie_cors_allowlist_and_host_rejection(tmp_path: Path) -> None:
             transport=httpx.ASGITransport(app=app), base_url="https://test",
         ) as client:
             allowed = await client.options("/api/conversations", headers={
-                "Origin": "http://localhost:5173",
+                "Origin": "http://localhost:15173",
                 "Access-Control-Request-Method": "POST",
                 "Access-Control-Request-Headers": "X-CSRF-Token,Content-Type",
             })
             assert allowed.status_code == 200
-            assert allowed.headers["access-control-allow-origin"] == "http://localhost:5173"
+            assert allowed.headers["access-control-allow-origin"] == "http://localhost:15173"
             assert allowed.headers["access-control-allow-credentials"] == "true"
             foreign = await client.options("/api/conversations", headers={
                 "Origin": "https://evil.example", "Access-Control-Request-Method": "POST",
@@ -309,7 +309,8 @@ async def test_auth_storage_failure_is_503_not_anonymous_fallback(tmp_path: Path
     app, _, quality = _app(tmp_path, legacy_identity=False)
     try:
         # 在惰性认证初始化之前使数据库路径不可用，不替换认证或错误映射。
-        app.state.container.settings.auth_db_path.mkdir()
+        with app.state.container.database.connection() as connection:
+            connection.execute('DROP TABLE users CASCADE')
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="https://test",
         ) as client:

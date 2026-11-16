@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""构建带指纹、与生产 Chroma 隔离的评估运行时。"""
+"""构建带指纹、与生产 PostgreSQL 隔离的评估运行时。"""
 
 import hashlib
 import json
@@ -138,8 +138,8 @@ class EvaluationRuntime:
         index_manifest_json: 不含凭据的规范 JSON。
         expected_chunk_count: 固定语料按当前配置产生的块数。
         container: 生产与评估共享的应用组合根。
-        vector_store: 隔离评估 Chroma 存储。
-        keyword_index: 与 Chroma 内容一致的 BM25 索引。
+        vector_store: 隔离评估 PostgreSQL 存储。
+        keyword_index: 与文本块同事务维护的 PostgreSQL 全文索引。
         query_service: 支持三种检索策略的评估查询服务。
     """
 
@@ -199,7 +199,7 @@ def build_evaluation_runtime(
         ValueError: 生产与评估路径相同。
         EvaluationRuntimeError: collection 元数据或记录数不一致。
     """
-    # 路径隔离必须先于 Chroma、HTTP 客户端和其他有副作用的
+    # 路径隔离必须先于 PostgreSQL、HTTP 客户端和其他有副作用的
     # 构造，以免无效配置留下本地或远程资源。
     settings.validate_evaluation_settings(require_judge=False)
     config = IndexConfig.from_settings(settings)
@@ -215,7 +215,8 @@ def build_evaluation_runtime(
         "collection_schema_version": COLLECTION_SCHEMA_VERSION,
     }
     runtime_options = RuntimeOptions(
-        chroma_path=settings.evaluation_chroma_path,
+        database_schema=settings.evaluation_database_schema,
+            artifacts_path=settings.evaluation_artifacts_path,
         collection_name=collection_name,
         collection_metadata=metadata,
         rebuild_collection=rebuild,
@@ -229,16 +230,18 @@ def build_evaluation_runtime(
                 "固定评估语料没有产生任何文本块"
             )
 
-        embedding_provider = container.embedding_provider
-        vector_store = container.vector_store
-        _prepare_index(
-            vector_store,
-            chunks,
-            embedding_provider,
-            settings.embedding_batch_size,
-            fingerprint,
-        )
-        keyword_index = container.keyword_index
+        from contextlib import nullcontext
+        with getattr(container, 'hold_index_initialization', nullcontext)():
+            embedding_provider = container.embedding_provider
+            vector_store = container.vector_store
+            _prepare_index(
+                vector_store,
+                chunks,
+                embedding_provider,
+                settings.embedding_batch_size,
+                fingerprint,
+            )
+            keyword_index = container.keyword_index
         query_service = container.baseline_query_service
         return EvaluationRuntime(
             collection_name=collection_name,

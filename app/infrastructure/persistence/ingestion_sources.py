@@ -144,6 +144,9 @@ class LocalIngestionSources:
         return self._docs_path / name
 
     def _sync_directory(self) -> None:
+        # Windows 无法以只读句柄打开目录，目录项由文件系统日志保证。
+        if os.name == "nt":
+            return
         descriptor = os.open(self._docs_path, os.O_RDONLY)
         try:
             os.fsync(descriptor)

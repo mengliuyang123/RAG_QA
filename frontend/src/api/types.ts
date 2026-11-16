@@ -34,6 +34,35 @@ export interface KbDocument {
   chunksCount: number;
   updatedAt: string | null;
   fileStatus: "available" | "missing";
+  /** 入库失败（没有文本块）的文档仍会列出，便于删除。 */
+  ingestionFailed?: boolean;
+}
+
+/** 同名不同内容时用户的选择：作为新版本替换，或另存为一篇。 */
+export type UploadConflictChoice = "replace" | "keep_both";
+
+/** 后端 documents 登记中已有的文档。 */
+export interface ExistingDocument {
+  docId: string;
+  kbId: string;
+  filename: string;
+  status: "pending" | "ready" | "failed";
+  uploadedAt: string;
+}
+
+export interface UploadOptions {
+  onConflict?: UploadConflictChoice;
+  replaceDocId?: string;
+}
+
+/** uploaded：新文档入库完成；exists：内容完全相同的文档已存在，未重复入库。 */
+export type UploadResult =
+  | { kind: "uploaded"; document: KbDocument }
+  | { kind: "exists"; existing: ExistingDocument };
+
+export interface BatchDeleteResult {
+  deleted: string[];
+  notFound: string[];
 }
 
 export interface SuggestedQuestion {
@@ -108,6 +137,30 @@ export interface Turn {
   traceId: string | null;
   feedback: FeedbackRating | null;
   createdAt: string;
+  /** 本轮每次工具调用的最终状态；旧记录或后端未提供时为空数组。 */
+  toolCalls: ToolCall[];
+  /** 本轮附带的结构化数据块（如表格）；缺失时为空数组。 */
+  dataBlocks: DataBlock[];
+}
+
+// 接口约定 v1：SSE `event: tool` 与轮次字段 `tool_calls`。args / result 保留原始 JSON，
+// 由各工具的渲染组件自行解析，未知工具不会因为字段不同而报错。
+export type ToolCallStatus = "running" | "complete" | "error";
+
+export interface ToolCall {
+  id: string;
+  name: string;
+  status: ToolCallStatus;
+  args: Record<string, unknown>;
+  result: Record<string, unknown> | null;
+  error: { code: string; message: string } | null;
+}
+
+// 接口约定 v1：SSE `event: data` 与轮次字段 `data_blocks`。type 未知时前端忽略。
+export interface DataBlock {
+  id: string;
+  type: string;
+  data: unknown;
 }
 
 export interface ConversationSummary {
@@ -133,6 +186,10 @@ export interface StatusUpdate {
 export interface StreamHandlers {
   onStatus(update: StatusUpdate): void;
   onToken(token: string): void;
+  /** 工具调用的状态变化；同一 id 先 running，再推唯一终态。 */
+  onTool(call: ToolCall): void;
+  /** 结构化数据块（二期，后端可能晚到）。 */
+  onData(block: DataBlock): void;
   onComplete(turn: Turn): void;
   onError(code: string, message: string): void;
 }
@@ -169,6 +226,34 @@ export interface RefusalRecord {
 
 // 后端尚未实现的能力。live 模式下为 false 的功能会退回本地数据，
 // 页面据此显示"示例数据"提示，避免把假数据当成真实结果。
+// 管理员在线修改的模型配置。secret 为 API Key，按产品要求后端返回明文。
+export type ModelSettingKind = "secret" | "url" | "text" | "int";
+
+export interface ModelSettingField {
+  name: string;
+  envKey: string;
+  label: string;
+  kind: ModelSettingKind;
+  hint: string;
+  value: string | number | null;
+  defaultValue: string | number | null;
+  /** 进程环境变量里也有同名键：重启后会以环境变量为准，.env 里的值不生效。 */
+  overriddenByEnvironment: boolean;
+}
+
+export interface ModelSettingGroup {
+  id: string;
+  title: string;
+  description: string;
+  fields: ModelSettingField[];
+}
+
+export interface ModelSettings {
+  groups: ModelSettingGroup[];
+  /** 向量索引已锁定的维度；还没有入库任何向量时为 null。 */
+  storedEmbeddingDimensions: number | null;
+}
+
 export type Feature =
   | "auth"
   | "knowledgeBases"
@@ -209,11 +294,16 @@ export interface Api {
       kbId: string,
       file: File,
       onProgress: (progress: UploadProgress) => void,
-    ): Promise<KbDocument>;
+      options?: UploadOptions,
+    ): Promise<UploadResult>;
     deleteDocument(docId: string): Promise<void>;
+    deleteDocuments(docIds: string[]): Promise<BatchDeleteResult>;
     createKnowledgeBase(kb: { id: string; name: string; description: string }): Promise<void>;
     updateKnowledgeBase(kbId: string, description: string): Promise<void>;
     insights(): Promise<KbInsight[]>;
     refusals(): Promise<RefusalRecord[]>;
+    getModelSettings(): Promise<ModelSettings>;
+    /** 只提交改动的字段；null 表示清空（恢复默认）。保存成功后立即生效。 */
+    updateModelSettings(values: Record<string, string | number | null>): Promise<ModelSettings>;
   };
 }

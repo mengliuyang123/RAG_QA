@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """用真实本地索引验证分库过滤发生在召回和Top-K之前。"""
 
@@ -11,7 +12,7 @@ from app.domain.documents import DocumentChunk
 from app.domain.retrieval import RetrievalResult
 from app.domain.retrieval import RetrievalStrategy
 from app.infrastructure.indexes.bm25 import BM25Index
-from app.infrastructure.vectorstores.chroma import ChromaVectorStore
+from app.infrastructure.vectorstores.postgres import PostgresVectorStore
 from tests.test_retriever import FakeQueryEmbedder
 
 
@@ -28,7 +29,7 @@ def _stores(tmp_path: Path):
         _chunk("dev:0", "dev", "needle needle needle needle"),
         _chunk("dev:1", "dev", "unrelated document"),
     ]
-    store = ChromaVectorStore(tmp_path, "scoped_retrieval")
+    store = PostgresVectorStore(pg_database(tmp_path), "scoped_retrieval")
     store.add_chunks(chunks, [[0.0, 1.0], [1.0, 0.0], [1.0, 0.01]])
     index = BM25Index()
     index.rebuild(chunks)
@@ -133,31 +134,15 @@ def test_invalid_scope_is_rejected_before_external_calls(
     assert embedder.queries == []
 
 
-def test_legacy_metadata_migrates_without_reembedding_or_reassigning_known_kb(
-    tmp_path: Path,
-) -> None:
-    """重开旧索引只给缺少kb_id的记录补默认库，保留向量和其他元数据。
-
-    Args:
-        tmp_path: 隔离旧版Chroma目录。
-    """
-    store = ChromaVectorStore(tmp_path, "legacy_scopes")
-    store._collection.add(
-        ids=["legacy", "known"], embeddings=[[1.0, 0.0], [0.0, 1.0]],
-        documents=["旧正文", "已归属正文"],
-        metadatas=[
-            {"doc_id": "old", "filename": "a.md", "page": 0,
-             "chunk_index": 0, "custom": "preserved"},
-            {"doc_id": "known", "filename": "b.md", "page": 1,
-             "chunk_index": 0, "kb_id": "dev"},
-        ],
-    )
-    reopened = ChromaVectorStore(tmp_path, "legacy_scopes")
-    matches = reopened.query_by_embedding([1.0, 0.0], 1, kb_ids=("default",))
-    assert [item.chunk.id for item in matches] == ["legacy"]
-    raw = reopened._collection.get(ids=["legacy"], include=["metadatas", "embeddings"])
-    assert raw["metadatas"][0]["custom"] == "preserved"
-    assert raw["metadatas"][0]["kb_id"] == "default"
-    assert list(raw["embeddings"][0]) == [1.0, 0.0]
-    known = reopened.query_by_embedding([0.0, 1.0], 1, kb_ids=("dev",))
-    assert [item.chunk.id for item in known] == ["known"]
+def test_postgres_reopen_keeps_scope_and_vectors(tmp_path: Path) -> None:
+    from app.domain.documents import DocumentChunk
+    database=pg_database(tmp_path/'vectors.db')
+    store=PostgresVectorStore(database,'scopes')
+    chunk=DocumentChunk(id='opaque',doc_id='doc',text='original',filename='guide.md',page=None,chunk_index=0,kb_id='ops')
+    store.add_chunks([chunk],[[1.0,0.0]])
+    with database.connection(read_only=True) as connection:
+        before=connection.execute('SELECT embedding::text FROM vector_chunks').fetchone()[0]
+    reopened=PostgresVectorStore(database,'scopes')
+    assert reopened.list_chunks()==[chunk]
+    with database.connection(read_only=True) as connection:
+        assert connection.execute('SELECT embedding::text FROM vector_chunks').fetchone()[0]==before

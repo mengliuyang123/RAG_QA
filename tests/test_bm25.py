@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """BM25 关键词索引测试。"""
 
@@ -9,7 +10,7 @@ from app.bootstrap.factories import AdapterFactories
 from app.domain.documents import DocumentChunk
 from app.infrastructure.indexes import bm25
 from app.infrastructure.indexes.bm25 import BM25Index, tokenize
-from app.infrastructure.vectorstores.chroma import ChromaVectorStore
+from app.infrastructure.vectorstores.postgres import PostgresVectorStore
 
 
 def make_chunk(
@@ -178,7 +179,7 @@ def test_bm25_dependency_builds_index_from_persisted_chunks(
     Args:
         tmp_path: pytest 提供的临时 Chroma 目录。
     """
-    store = ChromaVectorStore(tmp_path, "bm25_startup")
+    store = PostgresVectorStore(pg_database(tmp_path), "bm25_startup")
     store.add_chunks(
         [make_chunk("doc:0", "FastAPI response_model reference")],
         [[1.0, 0.0]],

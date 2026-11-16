@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """只用资源标识与正式轮次时间统计引用行，不读取聊天或引用正文。"""
 
-import sqlite3
+import psycopg
+from app.infrastructure.persistence.database import Database, Record
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC
@@ -19,22 +20,14 @@ _FROM = """ FROM turn_citations citation
     JOIN conversation_turns turn ON turn.id = citation.turn_id
     JOIN conversations conversation ON conversation.id = turn.conversation_id
     WHERE conversation.status = 'active'
-        AND turn.created_at >= ? AND turn.created_at <= ? """
+        AND turn.created_at >= %s AND turn.created_at <= %s """
 
 
-class SQLiteDocumentCitationReader:
+class PostgresDocumentCitationReader:
     """业务库只读计数，读取失败不能补造空统计。"""
 
-    def __init__(self, path: Path) -> None:
-        """保存组合根已初始化的当前业务路径。
-
-        Args:
-            path: 当前运行的正式业务库。
-
-        Returns:
-            None。
-        """
-        self._path = path
+    def __init__(self, database: Database) -> None:
+        self._database = database
 
     def documents(
         self, doc_ids: tuple[UUID, ...], started_at: datetime, ended_at: datetime,
@@ -58,7 +51,7 @@ class SQLiteDocumentCitationReader:
                 totals[identifier] = DocumentCitationTotals(total=0, unattributed=0)
             for offset in range(0, len(identifiers), 100):
                 batch = identifiers[offset:offset + 100]
-                marks = ",".join("?" for _ in batch)
+                marks = ",".join("%s" for _ in batch)
                 query = """SELECT citation.doc_id, COUNT(*) AS total,
                     SUM(CASE WHEN citation.chunk_id IS NULL OR citation.chunk_id = ''
                         THEN 1 ELSE 0 END) AS unattributed """
@@ -94,10 +87,10 @@ class SQLiteDocumentCitationReader:
         values: list[object] = [started_at.astimezone(UTC).isoformat(), ended_at.astimezone(UTC).isoformat(), str(doc_id)]
         condition = unknown
         if chunk_ids:
-            condition += " OR citation.chunk_id IN (" + ",".join("?" for _ in chunk_ids) + ")"
+            condition += " OR citation.chunk_id IN (" + ",".join("%s" for _ in chunk_ids) + ")"
             values.extend(chunk_ids)
         query = "SELECT citation.chunk_id, COUNT(*) AS total" + _FROM
-        query += " AND citation.doc_id = ? AND (" + condition + ") GROUP BY citation.chunk_id"
+        query += " AND citation.doc_id = %s AND (" + condition + ") GROUP BY citation.chunk_id"
         with self._snapshot() as connection:
             for row in connection.execute(query, values):
                 identifier = row["chunk_id"]
@@ -112,15 +105,9 @@ class SQLiteDocumentCitationReader:
         )
 
     @contextmanager
-    def _snapshot(self) -> Iterator[sqlite3.Connection]:
-        connection = None
+    def _snapshot(self) -> Iterator[psycopg.Connection]:
         try:
-            connection = sqlite3.connect(self._path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
-            connection.row_factory = sqlite3.Row
-            connection.execute("BEGIN")
-            yield connection
-        except (sqlite3.Error, OSError, ValueError) as error:
-            raise KnowledgeContentError("正式引用统计暂时不可用") from error
-        finally:
-            if connection is not None:
-                connection.close()
+            with self._database.connection(read_only=True) as connection:
+                yield connection
+        except psycopg.Error as exc:
+            raise KnowledgeContentError("PostgreSQL 仓储操作失败") from exc

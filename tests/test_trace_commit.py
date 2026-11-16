@@ -1,8 +1,10 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """模型执行成功不等于正式轮次提交成功，两者必须可分别查询。"""
 
 import json
-import sqlite3
+import psycopg
+from app.infrastructure.persistence.database import record_row, Record
 from pathlib import Path
 from uuid import UUID
 
@@ -17,9 +19,9 @@ from tests.test_unified_query_api import _events
 
 
 def _last_trace(app):
-    with sqlite3.connect(app.state.container.settings.trace_db_path) as connection:
+    with pg_connect(app.state.container.database) as connection:
         row = connection.execute(
-            "SELECT snapshot_json FROM traces ORDER BY rowid DESC LIMIT 1",
+            "SELECT snapshot_json FROM traces ORDER BY created_at DESC, trace_id DESC LIMIT 1",
         ).fetchone()
     return json.loads(row[0])
 
@@ -146,37 +148,17 @@ def test_cancel_during_validated_tokens_records_no_commit(tmp_path: Path) -> Non
         app.state.container.close()
 
 
-def test_legacy_trace_metadata_is_indexed_without_rewriting_history(tmp_path: Path) -> None:
-    """新建的trace_id索引列必须恢复旧metadata中的真实关联，不重跑模型。
-
-    Args:
-        tmp_path: 隔离数据库。
-    """
-    app, _, _ = _app(tmp_path)
-    settings = app.state.container.settings
+def test_postgres_migration_preserves_trace_history_link(tmp_path: Path) -> None:
+    from app.infrastructure.persistence.migrations import migrate_database
+    app,_,_=_app(tmp_path)
+    root=app.state.container
     try:
-        service = app.state.container.conversation_service
-        created = service.create()
-        saved = service.query(created.id, "你好")
-        trace_id = UUID(saved.metadata.trace_id)
-    finally:
-        app.state.container.close()
-    with sqlite3.connect(settings.conversation_db_path) as connection:
-        before = connection.execute(
-            "SELECT user_message, assistant_message, metadata_json FROM conversation_turns",
-        ).fetchone()
-        # 模拟已经带trace元数据、但尚未加入索引列的上个工作区版本。
-        connection.execute("DROP INDEX idx_turns_trace")
-        connection.execute("ALTER TABLE conversation_turns DROP COLUMN trace_id")
-    root = build_application_container(settings)
-    try:
-        detail = root.trace_query_service.get(trace_id)
-        assert detail.turn_available is True
-        assert detail.turn_id == saved.turn_id
-        with sqlite3.connect(settings.conversation_db_path) as connection:
-            after = connection.execute(
-                "SELECT user_message, assistant_message, metadata_json FROM conversation_turns",
-            ).fetchone()
-        assert after == before
+        conversation=root.conversation_service.create()
+        saved=root.conversation_service.query(conversation.id,'你好')
+        identifier=UUID(saved.metadata.trace_id)
+        before=root.trace_query_service.get(identifier)
+        migrate_database(root.database._dsn,root.database.schema)
+        assert root.trace_query_service.get(identifier)==before
+        assert before.turn_id==saved.turn_id
     finally:
         root.close()

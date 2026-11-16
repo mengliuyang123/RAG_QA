@@ -1,9 +1,11 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """单轮分享的真实鉴权、隔离、有效期和持久化契约。"""
 
 import hashlib
 import logging
-import sqlite3
+import psycopg
+from app.infrastructure.persistence.database import record_row, Record
 from contextlib import AsyncExitStack
 from datetime import UTC
 from datetime import datetime
@@ -22,8 +24,8 @@ from app.domain.conversations import AgentResult
 from app.domain.conversations import TurnCitation
 from app.domain.shares import ShareRequest
 from app.domain.shares import StoredShare
-from app.infrastructure.conversations.sqlite_repository import SQLiteConversationRepository
-from app.infrastructure.persistence.shares import SQLiteShareRepository
+from app.infrastructure.conversations.postgres_repository import PostgresConversationRepository
+from app.infrastructure.persistence.shares import PostgresShareRepository
 from tests.test_ingestion_job_container import _settings
 from tests.test_auth_service import PASSWORD
 from tests.test_unified_query_api import _app
@@ -112,8 +114,8 @@ async def test_share_requires_owner_and_exposes_only_selected_turn(
             )
             assert link["token"] not in caplog.text
             assert (await bob.get(path)).status_code == 404
-            with sqlite3.connect(tmp_path / "conversations.sqlite3") as db:
-                dump = "\n".join(db.iterdump())
+            with pg_connect(tmp_path / "conversations.db") as db:
+                dump = str(db.execute('SELECT token_hash FROM turn_shares').fetchall())
             assert link["token"] not in dump
             digest = hashlib.sha256(link["token"].encode()).hexdigest()
             assert digest in dump
@@ -139,7 +141,7 @@ async def test_share_storage_failure_is_closed_without_content(
             _, answer = await _turn(alice)
             endpoint = f"/api/turns/{answer['turn_id']}/shares"
             link = (await alice.post(endpoint, json={})).json()
-            with sqlite3.connect(tmp_path / "conversations.sqlite3") as db:
+            with pg_connect(tmp_path / "conversations.db") as db:
                 db.execute("DROP TABLE turn_shares")
             read = await alice.get("/api/shares/" + link["token"])
             write = await alice.post(endpoint, json={})
@@ -164,14 +166,14 @@ def test_share_reopens_in_isolated_runtime_without_models(
         explicit: 是否显式覆盖业务库路径。
     """
     settings = _settings(tmp_path)
-    production = SQLiteConversationRepository(settings.conversation_db_path)
+    production = PostgresConversationRepository(pg_database())
     sentinel = production.create(owner_id=uuid4())
     runtime_path = None
     if explicit:
-        runtime_path = tmp_path / "isolated.sqlite3"
-    options = RuntimeOptions(
-        chroma_path=tmp_path / "runtime", collection_name="share-test",
-        conversation_db_path=runtime_path,
+        runtime_path = tmp_path / "isolated.db"
+    options = RuntimeOptions(database_schema='isolated',
+        artifacts_path=tmp_path / "runtime", collection_name="share-test",
+
     )
     user = User(id=uuid4(), name="Alice")
     root = build_application_container(settings, options)
@@ -202,9 +204,9 @@ def test_share_reopens_in_isolated_runtime_without_models(
         assert shared.citations[0].doc_updated_at == datetime(2025, 1, 2, tzinfo=UTC)
         assert shared.citations[0].chunk_id == "opaque/5"
         assert shared.shared_by == "Alice"
-        with sqlite3.connect(settings.conversation_db_path) as db:
+        with pg_connect() as db:
             tables = db.execute(
-                "SELECT name FROM sqlite_master WHERE name = 'turn_shares'",
+                "SELECT token_hash FROM turn_shares",
             ).fetchall()
             assert tables == []
         assert production.get(sentinel.id).id == sentinel.id
@@ -221,38 +223,27 @@ def test_share_expiry_is_checked_before_reading_bodies(
         tmp_path: 临时SQLite路径。
         monkeypatch: 为真实连接安装列读取保护。
     """
-    path = tmp_path / "business.sqlite3"
-    repository = SQLiteConversationRepository(path)
+    path = tmp_path / "business.db"
+    repository = PostgresConversationRepository(pg_database(path))
     owner = uuid4()
     turn = repository.save_turn(
         repository.create(owner_id=owner).id, "不得读取的问题",
         AgentResult(answer="问候", answer_mode="direct", retrieval_calls=0,
                     citations=[]), 1.0,
     )
-    shares = SQLiteShareRepository(path)
+    shares = PostgresShareRepository(pg_database(path))
     deadline = datetime(2026, 1, 1, tzinfo=UTC)
     shares.create(StoredShare(
         token_hash="a" * 64, turn_id=turn.id, owner_id=owner,
         shared_by="Alice", created_at=deadline - timedelta(days=1),
         expires_at=deadline,
     ))
-    connect = sqlite3.connect
-
-    def guarded(*args, **kwargs):
-        connection = connect(*args, **kwargs)
-
-        def authorize(action, table, column, database, origin):
-            if action == sqlite3.SQLITE_READ:
-                if column in ("user_message", "assistant_message", "chunk_text"):
-                    return sqlite3.SQLITE_DENY
-            return sqlite3.SQLITE_OK
-
-        connection.set_authorizer(authorize)
-        return connection
-
-    monkeypatch.setattr(sqlite3, "connect", guarded)
-    with pytest.raises(ShareExpiredError):
-        shares.read("a" * 64, deadline)
+    from tests.postgres_support import observe_queries
+    def guard(query):
+        assert not any(column in query for column in ('user_message','assistant_message','chunk_text'))
+    with observe_queries(shares._database, guard):
+        with pytest.raises(ShareExpiredError):
+            shares.read("a" * 64, deadline)
 
 
 @pytest.mark.anyio
@@ -280,15 +271,15 @@ async def test_share_expiry_deleting_and_invalid_requests(tmp_path: Path) -> Non
                 {"owner_id": answer["turn_id"]},
             ):
                 assert (await alice.post(endpoint, json=body)).status_code == 422
-            with sqlite3.connect(tmp_path / "conversations.sqlite3") as db:
-                db.execute("UPDATE turn_shares SET expires_at = ?", (
+            with pg_connect(tmp_path / "conversations.db") as db:
+                db.execute("UPDATE turn_shares SET expires_at = %s", (
                     "2000-01-01T00:00:00+00:00",
                 ))
             expired = await alice.get(share_path)
             assert expired.status_code == 410
             assert expired.json()["error"]["code"] == "share_expired"
             assert (await alice.get("/api/shares/shr_missing")).status_code == 404
-            with sqlite3.connect(tmp_path / "conversations.sqlite3") as db:
+            with pg_connect(tmp_path / "conversations.db") as db:
                 db.execute("UPDATE conversations SET status = 'deleting'")
             assert (await alice.get(share_path)).status_code == 404
             assert (await alice.post(endpoint, json={})).status_code == 404

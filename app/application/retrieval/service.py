@@ -36,6 +36,13 @@ from app.domain.knowledge_bases import validate_kb_ids
 logger = logging.getLogger(__name__)
 
 
+_PUBLICATION_ATTEMPTS = 3
+
+
+class _PublicationAdvanced(Exception):
+    """检索快照之后有文档完成发布，需要按新快照重查。"""
+
+
 class VectorRetriever:
     """将问题向量化并查询只读向量存储。
 
@@ -221,7 +228,29 @@ class RetrievalService:
         validate_kb_ids(kb_ids)
         if kb_ids == ():
             return []
-        excluded_doc_ids = self._unpublished_documents()
+        for attempt in range(_PUBLICATION_ATTEMPTS):
+            excluded_doc_ids = self._unpublished_documents()
+            try:
+                return self._retrieve_snapshot(
+                    normalized_question, selected_strategy, top_k, kb_ids,
+                    excluded_doc_ids,
+                )
+            except _PublicationAdvanced:
+                # 快照之后有文档发布（例如替换版本提交并删除旧版本），旧排除集
+                # 可能把新版本挡在外面而旧版本已删，按新快照重查，避免空档。
+                if attempt == _PUBLICATION_ATTEMPTS - 1:
+                    raise VectorStoreError("文档发布状态持续变化，请重试查询") from None
+        raise AssertionError("unreachable")
+
+    def _retrieve_snapshot(
+        self,
+        normalized_question: str,
+        selected_strategy: RetrievalStrategy,
+        top_k: int,
+        kb_ids: tuple[str, ...] | None,
+        excluded_doc_ids: tuple[str, ...],
+    ) -> list[RetrievalResult]:
+        """按一个发布快照执行检索；快照过期时抛出 _PublicationAdvanced。"""
         timings = {
             "vector_ms": 0.0,
             "bm25_ms": 0.0,
@@ -297,6 +326,8 @@ class RetrievalService:
         current = set(self._unpublished_documents())
         if current.difference(excluded_doc_ids):
             raise VectorStoreError("文档发布状态已变化，请重试查询")
+        if set(excluded_doc_ids).difference(current):
+            raise _PublicationAdvanced()
 
     def close(self) -> None:
         """释放重排器自行持有的远程连接池。

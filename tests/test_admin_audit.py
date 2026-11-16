@@ -1,8 +1,10 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """审计只存无正文元数据，沿用明确期限且不误删未过期记录。"""
 
 import json
-import sqlite3
+import psycopg
+from app.infrastructure.persistence.database import record_row, Record
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
@@ -11,7 +13,7 @@ from uuid import uuid4
 
 from app.application.tracing.auditing import AdminAuditService
 from app.application.tracing import TraceService
-from app.infrastructure.persistence.traces import SQLiteTraceRepository
+from app.infrastructure.persistence.traces import PostgresTraceRepository
 
 
 def test_expired_audits_are_pruned_without_deleting_active_trace_or_audit(tmp_path: Path) -> None:
@@ -21,8 +23,8 @@ def test_expired_audits_are_pruned_without_deleting_active_trace_or_audit(tmp_pa
         tmp_path: 隔离追踪／审计库。
     """
     now = datetime(2026, 10, 23, tzinfo=UTC)
-    path = tmp_path / "trace.sqlite3"
-    repository = SQLiteTraceRepository(path, clock=lambda: now)
+    path = tmp_path / "trace.db"
+    repository = PostgresTraceRepository(pg_database(path), clock=lambda: now)
     one_day = AdminAuditService(repository, retention_days=1, clock=lambda: now)
     two_days = AdminAuditService(repository, retention_days=2, clock=lambda: now)
     actor = uuid4()
@@ -36,7 +38,7 @@ def test_expired_audits_are_pruned_without_deleting_active_trace_or_audit(tmp_pa
         pass
     now += timedelta(days=1)
     assert repository.prune_expired() == 0
-    with sqlite3.connect(path) as connection:
+    with pg_connect(path) as connection:
         events = connection.execute("SELECT event_json FROM admin_access_audit").fetchall()
     assert len(events) == 1
     assert json.loads(events[0][0])["resource_ids"] == [str(kept_id)]

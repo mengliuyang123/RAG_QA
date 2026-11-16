@@ -1,12 +1,15 @@
 import type {
   Citation,
   Clarification,
+  DataBlock,
+  ExistingDocument,
   Grounding,
   KbDocument,
   Lane,
   Outcome,
   Refusal,
   StatusUpdate,
+  ToolCall,
   Turn,
 } from "./types";
 
@@ -149,7 +152,68 @@ export function normalizeTurn(
     traceId: strOrNull(raw.trace_id),
     feedback: oneOf(raw.feedback, ["up", "down"] as const),
     createdAt: str(raw.created_at, new Date().toISOString()),
+    toolCalls: list(raw.tool_calls)
+      .map(normalizeToolCall)
+      .filter((call): call is ToolCall => call !== null),
+    dataBlocks: list(raw.data_blocks)
+      .map(normalizeDataBlock)
+      .filter((block): block is DataBlock => block !== null),
   };
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+// SSE `tool` 事件与历史 `tool_calls` 共用。缺少 id 或名称的条目无法合并状态，直接丢弃；
+// 未知的 status 按 running 处理，未知的 tool_name 原样保留，由渲染层决定是否显示。
+export function normalizeToolCall(raw: unknown): ToolCall | null {
+  const value = record(raw);
+  if (!value) return null;
+  const id = str(value.tool_call_id);
+  const name = str(value.tool_name);
+  if (!id || !name) return null;
+  const error = record(value.error);
+  let status = oneOf(value.status, ["running", "complete", "error"] as const) ?? "running";
+  if (error && status === "running") status = "error";
+  return {
+    id,
+    name,
+    status,
+    args: record(value.args) ?? {},
+    result: record(value.result),
+    error: status === "error"
+      ? { code: str(error?.code, "tool_failed"), message: str(error?.message, "工具调用失败") }
+      : null,
+  };
+}
+
+export function normalizeDataBlock(raw: unknown): DataBlock | null {
+  const value = record(raw);
+  if (!value) return null;
+  const id = str(value.data_id);
+  const type = str(value.type);
+  if (!id || !type) return null;
+  return { id, type, data: value.data ?? null };
+}
+
+// 流式过程中按 tool_call_id 合并：同一调用的后续事件替换旧状态，新调用追加在末尾。
+export function mergeToolCall(calls: readonly ToolCall[], next: ToolCall): ToolCall[] {
+  const index = calls.findIndex((call) => call.id === next.id);
+  if (index === -1) return [...calls, next];
+  const merged = [...calls];
+  merged[index] = next;
+  return merged;
+}
+
+export function mergeDataBlock(blocks: readonly DataBlock[], next: DataBlock): DataBlock[] {
+  const index = blocks.findIndex((block) => block.id === next.id);
+  if (index === -1) return [...blocks, next];
+  const merged = [...blocks];
+  merged[index] = next;
+  return merged;
 }
 
 export function normalizeStatus(raw: Raw): StatusUpdate {
@@ -173,6 +237,18 @@ export function normalizeDocument(raw: Raw): KbDocument {
     chunksCount: num(raw.chunks_count),
     updatedAt: strOrNull(raw.updated_at ?? raw.created_at),
     fileStatus: raw.file_status === "missing" ? "missing" : "available",
+    ...(raw.ingestion_status === "failed" ? { ingestionFailed: true } : {}),
+  };
+}
+
+export function normalizeExistingDocument(raw: Raw): ExistingDocument {
+  const status = raw.status === "pending" || raw.status === "failed" ? raw.status : "ready";
+  return {
+    docId: str(raw.doc_id),
+    kbId: str(raw.kb_id),
+    filename: str(raw.filename, "未知文件"),
+    status,
+    uploadedAt: str(raw.uploaded_at),
   };
 }
 

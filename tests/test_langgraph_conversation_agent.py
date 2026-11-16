@@ -5,6 +5,9 @@ from collections.abc import Sequence
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
+from app.application.errors import LLMGenerationError
+
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
@@ -245,31 +248,18 @@ def test_multiple_retrievals_share_stable_deduplicated_evidence_numbers() -> Non
     assert '"number":2' in tool_messages[1]["content"]
 
 
-def test_fourth_tool_call_is_not_executed_and_returns_safe_refusal() -> None:
-    responses: list[AIMessage] = []
-    for index in range(1, 5):
-        responses.append(
-            AIMessage(
-                content="",
-                tool_calls=[_tool_call(f"call-{index}", f"query-{index}")],
-            )
-        )
-    model = _ScriptedModel(responses)
-    retriever = _FakeRetriever(
-        {f"query-{index}": [_chunk(index)] for index in range(1, 5)}
-    )
-
-    result = _agent(model, retriever).run(uuid4(), "循环问题", [])
-
-    assert [call[0] for call in retriever.calls] == [
-        "query-1",
-        "query-2",
-        "query-3",
-    ]
-    assert result.answer == AGENT_REFUSAL_ANSWER
-    assert result.answer_mode is AnswerMode.RETRIEVAL
-    assert result.retrieval_calls == 3
-    assert result.citations == []
+def test_tool_request_after_sufficient_evidence_is_repaired_without_extra_search() -> None:
+    model = _ScriptedModel([
+        AIMessage(content='',tool_calls=[_tool_call('call-1','query-1')]),
+        AIMessage(content='',tool_calls=[_tool_call('call-2','query-2')]),
+        AIMessage(content='已完成的回答[1]'),
+    ])
+    retriever = _FakeRetriever({'query-1': [_chunk(1)]})
+    result = _agent(model, retriever).run(uuid4(), '循环问题', [])
+    assert [call[0] for call in retriever.calls] == ['query-1']
+    assert result.answer == '已完成的回答[1]'
+    assert result.retrieval_calls == 1
+    assert result.execution.budget.answer_assessments == 1
 
 
 def test_invalid_citation_is_repaired_once_without_more_tools() -> None:
@@ -295,7 +285,7 @@ def test_invalid_citation_is_repaired_once_without_more_tools() -> None:
     assert any("错误引用[9]" in str(message["content"]) for message in repair_messages)
 
 
-def test_failed_repair_returns_refusal_without_fake_citations() -> None:
+def test_failed_repair_is_generation_error_without_fake_citations() -> None:
     model = _ScriptedModel(
         [
             AIMessage(
@@ -308,11 +298,9 @@ def test_failed_repair_returns_refusal_without_fake_citations() -> None:
     )
     retriever = _FakeRetriever({"query": [_chunk(1)]})
 
-    result = _agent(model, retriever).run(uuid4(), "问题", [])
-
-    assert result.answer == AGENT_REFUSAL_ANSWER
-    assert result.citations == []
-    assert result.retrieval_calls == 1
+    with pytest.raises(LLMGenerationError):
+        _agent(model, retriever).run(uuid4(), '问题', [])
+    assert len(retriever.calls) == 1
 
 
 def test_status_callback_exposes_public_execution_phases_without_reasoning() -> None:

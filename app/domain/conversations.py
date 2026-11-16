@@ -15,6 +15,7 @@ from app.domain.execution import EvidenceBundle
 from app.domain.answer_metadata import AnswerMetadata
 from app.domain.knowledge_bases import DEFAULT_KB_ID
 from app.domain.routing import KnowledgeScope
+from app.domain.generative_ui import ToolCall, DataBlock
 
 KNOWLEDGE_REFUSAL_ANSWER = "根据现有知识库，我无法可靠回答这个问题"
 
@@ -62,6 +63,8 @@ class AgentResult(BaseModel):
     quality_issues: tuple[str, ...] = ()
     # 证据不足仍作答或审核未通过时为真，只能以部分依据发布。
     partial: bool = False
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+    data_blocks: list[DataBlock] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_mode_and_citations(self) -> Self:
@@ -104,6 +107,8 @@ class ConversationTurn(BaseModel):
     latency_ms: float = Field(ge=0)
     created_at: datetime
     metadata: AnswerMetadata | None = None
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+    data_blocks: list[DataBlock] = Field(default_factory=list)
 
 
 class ConversationSummary(BaseModel):
@@ -141,3 +146,5 @@ class ConversationQueryResult(BaseModel):
     latency_ms: float = Field(ge=0)
     metadata: AnswerMetadata | None = None
     created_at: datetime | None = None
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+    data_blocks: list[DataBlock] = Field(default_factory=list)

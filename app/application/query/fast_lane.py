@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """执行确定性的检索、证据裁判、生成与引用校验快速通道。"""
 
+from app.application.conversations.generative_ui import track_retrieval
 from collections.abc import Callable
 from time import monotonic
 
@@ -122,15 +123,17 @@ class FastLane:
                     "strategy": selected_strategy.value, "top_k": top_k,
                 }) as step,
             ):
-                if kb_ids is None:
-                    results = self._retriever.retrieve(
-                        actual_query, strategy=selected_strategy, top_k=top_k,
-                    )
-                else:
-                    results = self._retriever.retrieve(
-                        actual_query, strategy=selected_strategy, top_k=top_k,
-                        kb_ids=kb_ids,
-                    )
+                with track_retrieval(actual_query, kb_ids) as ui_rows:
+                    if kb_ids is None:
+                        results = self._retriever.retrieve(
+                            actual_query, strategy=selected_strategy, top_k=top_k,
+                        )
+                    else:
+                        results = self._retriever.retrieve(
+                            actual_query, strategy=selected_strategy, top_k=top_k,
+                            kb_ids=kb_ids,
+                        )
+                    ui_rows.extend(results)
                 step.set_output({"results": [
                     {"chunk_id": item.chunk_id, "kb_id": item.kb_id,
                      "score": item.score, "rank": rank}

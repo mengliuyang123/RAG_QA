@@ -1,8 +1,10 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """管理列表读取真实元数据与任务状态，不初始化模型或泄漏未发布正文。"""
 
 from pathlib import Path
-import sqlite3
+import psycopg
+from app.infrastructure.persistence.database import record_row, Record
 from uuid import uuid4
 
 import httpx
@@ -118,23 +120,15 @@ def test_document_job_metadata_is_batched_and_never_exposes_recovery_fields(
             repository.enqueue(IngestionJobSubmission(
                 job_id=f"job_{uuid4().hex}", doc_id=identifier, kb_id="default",
                 filename="guide.md", size_bytes=1, uploaded_by=uploader,
-                content_sha256="a" * 64,
+                content_sha256=uuid4().hex * 2,
             ), capacity=200)
         selects = []
-        connect = sqlite3.connect
-
-        def _trace(statement: str) -> None:
-            normalized = " ".join(statement.lower().split())
-            if normalized.startswith("select") and "from ingestion_jobs" in normalized:
+        from tests.postgres_support import observe_queries
+        def _trace(statement):
+            if 'FROM ingestion_jobs' in statement:
                 selects.append(statement)
-
-        def _connect(*args: object, **kwargs: object) -> sqlite3.Connection:
-            connection = connect(*args, **kwargs)
-            connection.set_trace_callback(_trace)
-            return connection
-
-        monkeypatch.setattr(sqlite3, "connect", _connect)
-        rows = repository.get_document_jobs(tuple(identifiers))
+        with observe_queries(root.database, _trace):
+            rows = repository.get_document_jobs(tuple(identifiers))
         assert set(rows) == set(identifiers)
         assert 1 <= len(selects) < 10
         for row in rows.values():
@@ -164,7 +158,7 @@ async def test_admin_list_fails_closed_on_corrupt_task_metadata(tmp_path: Path, 
         id=f"{queued.doc_id}:0", doc_id=str(queued.doc_id), filename="guide.txt",
         text="私密正文", page=None, chunk_index=0,
     )], [[1.0, 0.0]])
-    with sqlite3.connect(settings.knowledge_base_db_path) as connection:
+    with pg_connect() as connection:
         if fault == "status":
             connection.execute("UPDATE ingestion_jobs SET status='succeeded'")
         else:

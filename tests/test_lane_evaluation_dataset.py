@@ -7,11 +7,16 @@ import pytest
 
 from evaluation.datasets import DatasetValidationError
 from evaluation.datasets import load_corpus
+from tests.corpus_state import CORPUS_MISSING_REASON
+from tests.corpus_state import evaluation_corpus_complete
 
 
 ROOT = Path(__file__).resolve().parents[1] / "evaluation"
 
 
+@pytest.mark.skipif(
+    not evaluation_corpus_complete(), reason=CORPUS_MISSING_REASON,
+)
 def test_fixed_dataset_has_grounded_sources_and_thirteen_turn_smoke() -> None:
     """来源拼错、片段丢失或默认全量执行都会改变人工推导的13轮。
     """
@@ -34,6 +39,9 @@ def test_fixed_dataset_has_grounded_sources_and_thirteen_turn_smoke() -> None:
 
 
 
+@pytest.mark.skipif(
+    not evaluation_corpus_complete(), reason=CORPUS_MISSING_REASON,
+)
 def test_policy_filter_keeps_only_requested_policies() -> None:
     """只跑 auto 时每个片段只保留一次自动路由，不丢片段也不留对照组。
     """
@@ -52,6 +60,9 @@ def test_policy_filter_keeps_only_requested_policies() -> None:
     assert all(all(turn.requires_retrieval for turn in episode.turns) for episode, _ in agent)
 
 @pytest.mark.parametrize("mutation", ["duplicate", "unknown_source", "bad_smoke"])
+@pytest.mark.skipif(
+    not evaluation_corpus_complete(), reason=CORPUS_MISSING_REASON,
+)
 def test_invalid_labels_are_rejected_before_model_or_storage(
     tmp_path: Path, mutation: str,
 ) -> None:

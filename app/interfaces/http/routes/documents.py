@@ -11,6 +11,9 @@ from fastapi import HTTPException
 from fastapi import status
 from fastapi import Query
 from fastapi import Response
+from pydantic import BaseModel
+from pydantic import ConfigDict
+from pydantic import Field
 
 from app.application.documents.service import DocumentService
 from app.application.errors import DocumentDeletePartialError
@@ -80,6 +83,53 @@ def list_documents(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="文档列表读取失败",
         ) from error
+
+
+class BatchDeleteRequest(BaseModel):
+    """批量删除请求，一次最多 100 篇。
+
+    Attributes:
+        doc_ids: 待删除文档 UUID。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    doc_ids: list[UUID] = Field(min_length=1, max_length=100)
+
+
+class BatchDeleteResponse(BaseModel):
+    """批量删除结果。
+
+    Attributes:
+        deleted: 已删除的文档。
+        not_found: 不存在的文档。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    deleted: list[UUID]
+    not_found: list[UUID]
+
+
+@router.post("/documents/batch-delete", response_model=BatchDeleteResponse)
+def delete_documents(
+    body: BatchDeleteRequest,
+    service: Annotated[DocumentService, Depends(get_document_service)],
+    response: Response,
+) -> BatchDeleteResponse:
+    """按一组 doc_id 删除分块、登记与源文件，入库失败的文档同样可删。
+
+    Args:
+        body: 待删除的文档 UUID 列表。
+        service: 文档应用服务。
+        response: 禁止缓存的响应。
+
+    Returns:
+        已删除与不存在的文档。
+    """
+    response.headers["Cache-Control"] = "no-store"
+    result = service.delete_documents(tuple(body.doc_ids))
+    return BatchDeleteResponse(deleted=list(result.deleted), not_found=list(result.not_found))
 
 
 @router.delete(

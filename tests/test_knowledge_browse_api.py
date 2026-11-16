@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """只读文档分页、过滤、引用上下文与预设建议的真实HTTP契约。"""
 
@@ -181,20 +182,20 @@ async def test_confirmed_removed_document_is_gone_but_failed_delete_keeps_contex
     app, chunk, _ = _app(tmp_path, legacy_identity=False)
     root = app.state.container
     root.auth_service.create_user("member", PASSWORD, name="成员", role="member")
-    real_delete = root.ingestion_pipeline.delete_document
+    real_delete = root.document_registry.delete_documents
 
-    def failed(identifier: str) -> None:
+    def failed(targets: object) -> None:
         raise RuntimeError("PRIVATE_DELETE_FAILURE")
 
     try:
         async with _client(app) as client:
             path = f"/api/documents/{chunk.doc_id}/chunks/{chunk.id}"
             assert (await client.get(path)).status_code == 200
-            monkeypatch.setattr(root.ingestion_pipeline, "delete_document", failed)
+            monkeypatch.setattr(root.document_registry, "delete_documents", failed)
             with pytest.raises(RuntimeError):
                 root.document_service.delete_document(UUID(chunk.doc_id))
             assert (await client.get(path)).status_code == 200
-            monkeypatch.setattr(root.ingestion_pipeline, "delete_document", real_delete)
+            monkeypatch.setattr(root.document_registry, "delete_documents", real_delete)
             root.document_service.delete_document(UUID(chunk.doc_id))
             gone = await client.get(path)
             assert gone.status_code == 410
@@ -202,8 +203,8 @@ async def test_confirmed_removed_document_is_gone_but_failed_delete_keeps_contex
             assert "PRIVATE_DELETE_FAILURE" not in gone.text
             unknown = await client.get(f"/api/documents/{uuid4()}/chunks/unknown")
             assert unknown.status_code == 404
-            from app.infrastructure.persistence.knowledge_registry import SQLiteKnowledgeReadRegistry
-            reopened = SQLiteKnowledgeReadRegistry(tmp_path / "catalog.sqlite3")
+            from app.infrastructure.persistence.knowledge_registry import PostgresKnowledgeReadRegistry
+            reopened = PostgresKnowledgeReadRegistry(pg_database(tmp_path / "catalog.db"))
             assert reopened.was_deleted(UUID(chunk.doc_id)) is True
     finally:
         root.close()
@@ -270,8 +271,8 @@ async def test_curated_questions_require_admin_and_never_publish_private_history
                 written = await admin.put(path, json=body)
                 assert written.status_code == 200
                 assert [q["text"] for q in written.json()["questions"]] == ["服务启动失败怎么办", "如何查看日志"]
-                from app.infrastructure.persistence.knowledge_registry import SQLiteKnowledgeReadRegistry
-                reopened = SQLiteKnowledgeReadRegistry(tmp_path / "catalog.sqlite3")
+                from app.infrastructure.persistence.knowledge_registry import PostgresKnowledgeReadRegistry
+                reopened = PostgresKnowledgeReadRegistry(pg_database(tmp_path / "catalog.db"))
                 assert [q.id for q in reopened.list_curated("ops", 50)] == [q["id"] for q in written.json()["questions"]]
                 retry = await admin.put(path, json=body)
                 assert retry.json() == written.json()
@@ -315,7 +316,9 @@ async def test_read_apis_reject_anonymous_before_reading_content(
     def forbidden(*args: object, **kwargs: object) -> None:
         raise AssertionError("匿名请求不得读取索引内容")
 
-    monkeypatch.setattr(app.state.container.vector_store._collection, "get", forbidden)
+    monkeypatch.setattr(app.state.container.vector_store, 'list_document_headers', forbidden)
+    monkeypatch.setattr(app.state.container.vector_store, 'list_chunk_headers', forbidden)
+    monkeypatch.setattr(app.state.container.vector_store, 'read_chunks', forbidden)
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://test") as client:
             assert (await client.get(path)).status_code == 401
@@ -343,15 +346,12 @@ async def test_max_context_is_seven_chunks_and_storage_errors_are_not_gone(
             text=f"段{index}", chunk_index=index, page=index + 1,
         ))
     root.vector_store.add_chunks(chunks, [[1.0, 0.0] for _ in chunks])
-    original = root.vector_store._collection.get
+    original = root.vector_store.read_chunks
 
-    def bounded(*args: object, **kwargs: object):
-        if "documents" in kwargs.get("include", []):
-            if set(kwargs.get("ids", [])) != {f"opaque-{index}" for index in range(1, 8)}:
-                raise AssertionError("正文读取不应超出选定的七块")
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(root.vector_store._collection, "get", bounded)
+    def bounded(headers):
+        assert {header.chunk_id for header in headers} == {f'opaque-{index}' for index in range(1,8)}
+        return original(headers)
+    monkeypatch.setattr(root.vector_store, 'read_chunks', bounded)
     try:
         async with _client(app) as client:
             response = await client.get(f"/api/documents/{DOC}/chunks/opaque-4", params={"context": 3})
@@ -362,7 +362,8 @@ async def test_max_context_is_seven_chunks_and_storage_errors_are_not_gone(
             def unavailable(*args: object, **kwargs: object) -> None:
                 raise RuntimeError("PRIVATE_STORE_DETAILS")
 
-            monkeypatch.setattr(root.vector_store._collection, "get", unavailable)
+            with root.database.connection() as connection:
+                connection.execute('ALTER TABLE vector_chunks RENAME COLUMN metadata TO damaged_metadata')
             failed = await client.get(f"/api/documents/{DOC}/chunks/opaque-4")
             assert failed.status_code == 503
             assert "PRIVATE_STORE_DETAILS" not in failed.text
@@ -387,7 +388,8 @@ async def test_failed_deletion_record_prevents_index_mutation(
     def failed(doc_id: UUID, kb_id: str) -> None:
         raise KnowledgeContentError("PRIVATE_REGISTRY_ERROR")
 
-    monkeypatch.setattr(root.knowledge_read_registry, "record_deletion", failed)
+    # 删除事实与分块删除在同一事务写入；登记写入失败时整个事务不提交。
+    monkeypatch.setattr(root.document_registry, "delete_documents", lambda targets: failed(None, ""))
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             response = await client.delete(f"/api/documents/{chunk.doc_id}")

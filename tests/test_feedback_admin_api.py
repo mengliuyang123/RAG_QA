@@ -1,10 +1,12 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """反馈后台必须有独立管理员授权、审计与用户修改时的处理失效保护。"""
 
 from contextlib import AsyncExitStack
 from pathlib import Path
 import json
-import sqlite3
+import psycopg
+from app.infrastructure.persistence.database import record_row, Record
 
 import httpx
 import pytest
@@ -80,7 +82,7 @@ async def test_admin_feedback_triage_preserves_idempotency_and_detects_changes(t
                 transport=httpx.ASGITransport(app=app), base_url="https://test",
             ))
             assert (await anonymous.get(endpoint)).status_code == 401
-            with sqlite3.connect(app.state.container.settings.trace_db_path) as connection:
+            with pg_connect(app.state.container.database) as connection:
                 rows = connection.execute("SELECT event_json FROM admin_access_audit").fetchall()
             events = [json.loads(row[0]) for row in rows]
             assert any(event["action"] == "read" for event in events)

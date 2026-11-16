@@ -1,3 +1,5 @@
+from tests.postgres_support import pg_schema
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """生产组合根的两个入口必须共用编排器，不以依赖替身绕过它。"""
 
@@ -68,19 +70,19 @@ def _app(
             max_retrieval_calls=max_calls, quality_evaluator=quality,
         )
 
-    settings = Settings(
+    settings = Settings(database_schema=pg_schema(tmp_path),
         _env_file=None, llm_api_key="offline",
         llm_base_url="http://offline.invalid/v1",
         embedding_api_key="offline",
         embedding_base_url="http://offline.invalid/v1",
         reranker_base_url=None, knowledge_retrieval_profile="hybrid",
-        docs_path=tmp_path / "docs", chroma_path=tmp_path / "chroma",
-        knowledge_base_db_path=tmp_path / "catalog.sqlite3",
-        trace_db_path=tmp_path / "traces.sqlite3",
-        auth_db_path=tmp_path / "auth.sqlite3",
+        docs_path=tmp_path / "docs", artifacts_path=tmp_path / "chroma",
+
+
+
         http_allowed_hosts=("test",),
-        conversation_db_path=tmp_path / "conversations.sqlite3",
-        agent_checkpoint_db_path=tmp_path / "checkpoints.sqlite3",
+
+
     )
     if settings_overrides is not None:
         settings = Settings(
@@ -281,10 +283,10 @@ async def test_default_direct_route_does_not_require_model_credentials(
         llm_api_key=None,
         embedding_api_key=None,
         reranker_base_url=None,
-        knowledge_base_db_path=tmp_path / "catalog.sqlite3",
-        chroma_path=tmp_path / "unused-chroma",
+
+        artifacts_path=tmp_path / "unused-chroma",
         http_allowed_hosts=("test",),
-        trace_db_path=tmp_path / "traces.sqlite3",
+
     )
     app = create_app(settings=settings)
     allow_test_identity(app)
@@ -296,7 +298,7 @@ async def test_default_direct_route_does_not_require_model_credentials(
         assert response.status_code == 200
         assert response.json()["lane"] == "direct"
         assert response.json()["answer_mode"] == "direct"
-        assert not settings.chroma_path.exists()
+        assert app.state.container.vector_store.count() == 0
     finally:
         app.state.container.close()
 

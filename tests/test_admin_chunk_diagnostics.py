@@ -1,9 +1,11 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """管理员要拿到真实有界正文与引用事实，而不是块数或伪造零占位。"""
 
 import base64
 import json
-import sqlite3
+import psycopg
+from app.infrastructure.persistence.database import record_row, Record
 from contextlib import AsyncExitStack
 from datetime import UTC
 from datetime import datetime
@@ -23,7 +25,7 @@ from app.domain.conversations import ConversationTurn
 from app.domain.conversations import TurnCitation
 from app.domain.documents import DocumentChunk
 from app.domain.knowledge_views import IndexedChunkHeader
-from app.infrastructure.conversations.sqlite_repository import SQLiteConversationRepository
+from app.infrastructure.conversations.postgres_repository import PostgresConversationRepository
 from app.main import create_app
 from app.interfaces.http.auth import require_user
 from tests.http_auth import allow_test_identity
@@ -32,7 +34,7 @@ from tests.test_ingestion_job_container import _settings
 
 
 def _cite(
-    repository: SQLiteConversationRepository, doc_id: UUID,
+    repository: PostgresConversationRepository, doc_id: UUID,
     chunk_ids: list[str | None],
 ) -> ConversationTurn:
     citations = []
@@ -70,13 +72,13 @@ async def test_real_chunk_pages_and_document_counts_use_formal_citations(
             filename="guide.txt", text=f"实际正文{index}", page=None, chunk_index=index * 2,
         ))
     root.vector_store.add_chunks(chunks, [[1.0, 0.0]] * len(chunks))
-    repository = SQLiteConversationRepository(settings.conversation_db_path)
+    repository = PostgresConversationRepository(pg_database())
     _cite(repository, doc_id, [chunks[0].id, chunks[1].id])
     old = _cite(repository, doc_id, [chunks[0].id])
     deleted = _cite(repository, doc_id, [chunks[0].id])
     repository.mark_deleting(deleted.conversation_id)
-    with sqlite3.connect(settings.conversation_db_path) as connection:
-        connection.execute("UPDATE conversation_turns SET created_at=? WHERE id=?", (
+    with pg_connect() as connection:
+        connection.execute("UPDATE conversation_turns SET created_at=%s WHERE id=%s", (
             (datetime.now(UTC) - timedelta(days=8)).isoformat(), str(old.id),
         ))
     reads = []
@@ -172,7 +174,7 @@ async def test_chunk_diagnostics_enforces_cookie_role_and_unpublished_boundary(t
                 normal = await client.get(f"/api/documents/{job.doc_id}/chunks/opaque/{job.doc_id}/0")
                 assert normal.status_code == 404
                 assert "私密正文" not in normal.text
-        with sqlite3.connect(settings.trace_db_path) as connection:
+        with pg_connect() as connection:
             records = connection.execute("SELECT event_json FROM admin_access_audit").fetchall()
         assert len(records) == 1
         event = json.loads(records[0][0])
@@ -217,7 +219,7 @@ async def test_diagnostic_storage_failure_never_reads_body_or_returns_zero(
 
         monkeypatch.setattr(root.trace_repository, "record_admin_access", _fail_audit)
     else:
-        with sqlite3.connect(settings.conversation_db_path) as connection:
+        with pg_connect() as connection:
             connection.execute("DROP TABLE turn_citations")
     app = allow_test_identity(create_app(settings=settings, container_factory=lambda settings: root))
     try:
@@ -242,23 +244,23 @@ def test_citation_statistics_runtime_overrides_do_not_open_production(tmp_path: 
         None。
     """
     settings = _settings(tmp_path)
-    first = build_application_container(settings, RuntimeOptions(chroma_path=tmp_path / "eval", collection_name="first"))
-    second = build_application_container(settings, RuntimeOptions(chroma_path=tmp_path / "eval", collection_name="second"))
-    explicit = tmp_path / "selected-business.sqlite3"
-    third = build_application_container(settings, RuntimeOptions(conversation_db_path=explicit))
+    first = build_application_container(settings, RuntimeOptions(artifacts_path=tmp_path / "eval", collection_name="first"))
+    second = build_application_container(settings, RuntimeOptions(artifacts_path=tmp_path / "eval", collection_name="second"))
+    explicit = tmp_path / "selected-business.db"
+    third = build_application_container(settings, RuntimeOptions(database_schema='isolated', ))
     identifier = uuid4()
     try:
         assert first.citation_statistics.documents((identifier,))[identifier].total == 0
-        path = next((tmp_path / "eval").rglob("conversations.sqlite3"))
-        _cite(SQLiteConversationRepository(path), identifier, ["opaque/a"])
+        path = first.database
+        _cite(PostgresConversationRepository(pg_database(path)), identifier, ["opaque/a"])
         assert first.citation_statistics.documents((identifier,))[identifier].total == 1
         assert second.citation_statistics.documents((identifier,))[identifier].total == 0
         assert third.citation_statistics.documents((identifier,))[identifier].total == 0
-        assert explicit.is_file()
-        assert not settings.conversation_db_path.exists()
-        assert not settings.agent_checkpoint_db_path.exists()
-        assert not settings.chroma_path.exists()
-        assert not settings.trace_db_path.exists()
+        assert len({first.database.schema,second.database.schema,third.database.schema}) == 3
+        assert first.database.schema != settings.database_schema
+        assert first.database.schema != settings.database_schema
+        assert not settings.artifacts_path.exists()
+        assert first.database.schema != settings.database_schema
     finally:
         first.close()
         second.close()

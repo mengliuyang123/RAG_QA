@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """配置指纹必须区分执行行为，不纳入凭据和本地数据路径。"""
 
@@ -11,7 +12,7 @@ from app.config import Settings
 
 def _version(path: Path, *, temperature: float | None = None, **options: object) -> str:
     root = build_application_container(
-        Settings(_env_file=None, trace_db_path=path, **options),
+        Settings(_env_file=None,  **options),
         RuntimeOptions(llm_temperature=temperature),
     )
     try:
@@ -28,9 +29,9 @@ def test_execution_settings_change_configuration_version(tmp_path: Path) -> None
     Args:
         tmp_path: 隔离所有追踪库。
     """
-    original = _version(tmp_path / "first.sqlite3")
-    changed = _version(tmp_path / "second.sqlite3", understanding_confidence_threshold=0.9)
-    overridden = _version(tmp_path / "third.sqlite3", temperature=0.0)
+    original = _version(tmp_path / "first.db")
+    changed = _version(tmp_path / "second.db", understanding_confidence_threshold=0.9)
+    overridden = _version(tmp_path / "third.db", temperature=0.0)
     assert original != changed
     assert original != overridden
 
@@ -41,9 +42,9 @@ def test_credentials_and_storage_paths_do_not_change_version(tmp_path: Path) -> 
     Args:
         tmp_path: 隔离所有追踪库。
     """
-    original = _version(tmp_path / "first.sqlite3", llm_api_key="first-test-credential")
+    original = _version(tmp_path / "first.db", llm_api_key="first-test-credential")
     changed = _version(
-        tmp_path / "other.sqlite3", llm_api_key="another-test-credential",
-        docs_path=tmp_path / "other-docs", auth_db_path=tmp_path / "auth.sqlite3",
+        tmp_path / "other.db", llm_api_key="another-test-credential",
+        docs_path=tmp_path / "other-docs", auth_db_path=tmp_path / "auth.db",
     )
     assert changed == original

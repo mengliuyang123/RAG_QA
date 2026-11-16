@@ -1,0 +1,18 @@
+DROP INDEX IF EXISTS idx_turns_feedback_time;
+ALTER TABLE conversations ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at::timestamptz;
+ALTER TABLE conversations ALTER COLUMN updated_at TYPE TIMESTAMPTZ USING updated_at::timestamptz;
+ALTER TABLE conversation_turns ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at::timestamptz;
+ALTER TABLE knowledge_bases ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at::timestamptz;
+ALTER TABLE knowledge_bases ALTER COLUMN updated_at TYPE TIMESTAMPTZ USING updated_at::timestamptz;
+ALTER TABLE ingestion_jobs ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at::timestamptz;
+ALTER TABLE ingestion_jobs ALTER COLUMN updated_at TYPE TIMESTAMPTZ USING updated_at::timestamptz;
+ALTER TABLE ingestion_jobs ALTER COLUMN lease_expires_at TYPE TIMESTAMPTZ USING lease_expires_at::timestamptz;
+ALTER TABLE document_deletions ALTER COLUMN recorded_at TYPE TIMESTAMPTZ USING recorded_at::timestamptz;
+ALTER TABLE traces ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at::timestamptz;
+ALTER TABLE traces ALTER COLUMN expires_at TYPE TIMESTAMPTZ USING expires_at::timestamptz;
+ALTER TABLE admin_access_audit ALTER COLUMN expires_at TYPE TIMESTAMPTZ USING expires_at::timestamptz;
+ALTER TABLE turn_shares ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at::timestamptz;
+ALTER TABLE turn_shares ALTER COLUMN expires_at TYPE TIMESTAMPTZ USING expires_at::timestamptz;
+ALTER TABLE conversation_turns ALTER COLUMN feedback_updated_at TYPE TIMESTAMPTZ USING feedback_updated_at::timestamptz;
+ALTER TABLE conversation_turns ALTER COLUMN feedback_triaged_at TYPE TIMESTAMPTZ USING feedback_triaged_at::timestamptz;
+CREATE INDEX idx_turns_feedback_time ON conversation_turns(COALESCE(feedback_updated_at, created_at), id) WHERE feedback_json IS NOT NULL;

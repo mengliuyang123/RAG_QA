@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 import logging
 from pathlib import Path
 
@@ -22,7 +23,7 @@ from app.domain.retrieval import (
     RetrievalStrategy,
     VectorSearchResult,
 )
-from app.infrastructure.vectorstores.chroma import ChromaVectorStore
+from app.infrastructure.vectorstores.postgres import PostgresVectorStore
 
 
 class FakeQueryEmbedder:
@@ -492,7 +493,7 @@ def test_vector_retriever_queries_real_chroma_in_similarity_order(
     tmp_path: Path,
 ) -> None:
     """真实 Chroma 应按余弦距离返回最相近的已知向量。"""
-    store = ChromaVectorStore(tmp_path / "chroma", "retrieval_test")
+    store = PostgresVectorStore(pg_database(tmp_path / "chroma"), "retrieval_test")
     chunks = [
         make_search_result("doc-a:0", 0.0).chunk,
         make_search_result("doc-b:0", 0.0, filename="b.txt", page=None).chunk,

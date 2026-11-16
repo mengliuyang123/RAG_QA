@@ -14,6 +14,7 @@ from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import field_validator
 
+from app.interfaces.http.container_runtime import current_container
 from app.application.knowledge.catalog import KnowledgeCatalogService
 from app.application.knowledge.deletion import KnowledgeBaseDeletionService
 from app.domain.auth import User
@@ -72,7 +73,7 @@ def get_knowledge_catalog(request: Request) -> KnowledgeCatalogService:
     Returns:
         生产组合根创建的目录服务。
     """
-    return request.app.state.container.knowledge_catalog_service
+    return current_container(request).knowledge_catalog_service
 
 
 def get_knowledge_deletion(request: Request) -> KnowledgeBaseDeletionService:
@@ -84,7 +85,7 @@ def get_knowledge_deletion(request: Request) -> KnowledgeBaseDeletionService:
     Returns:
         同运行共享的知识库删除服务。
     """
-    return request.app.state.container.knowledge_deletion_service
+    return current_container(request).knowledge_deletion_service
 
 
 @admin_router.delete("/{kb_id}", response_model=KnowledgeBaseDeleteResult)

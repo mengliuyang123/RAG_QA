@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Turn } from "../api/types";
-import { TurnView } from "./TurnView";
+import { TurnBody } from "./TurnView";
 
 vi.mock("../state/AppContext", () => ({
   useApp: () => ({
@@ -29,21 +29,22 @@ function refusedTurn(overrides: Partial<Turn> = {}): Turn {
     evidenceStats: { used: 0, excluded: 0, retrieved: 1, relevant: 1 },
     refusal: { reason: "insufficient_evidence", foundSummary: "检索到1段资料，1段相关。", missing: ["存储方案"], suggestedKbId: null },
     clarification: null, latencyMs: 1000, traceId: null, feedback: null, createdAt: "2026-10-28T00:00:00Z",
+    toolCalls: [], dataBlocks: [],
     ...overrides,
   };
 }
 
 function renderTurn(turn: Turn, onRetryWithScope = vi.fn()) {
   render(
-    <TurnView
+    <TurnBody
       turn={turn} activeCitation={null} onCite={() => undefined} onAsk={() => undefined}
-      onRetryWithScope={onRetryWithScope} onFeedback={() => undefined}
+      onRetryWithScope={onRetryWithScope}
     />,
   );
   return onRetryWithScope;
 }
 
-describe("TurnView refusal", () => {
+describe("TurnBody refusal", () => {
   it("offers every out-of-scope knowledge base even without a backend suggestion", () => {
     const onRetry = renderTurn(refusedTurn());
     expect(screen.getByText("找到 1 段相关资料，但不足以回答")).toBeTruthy();
@@ -65,5 +66,35 @@ describe("TurnView refusal", () => {
   it("does not offer a retry picker for automatic scope", () => {
     renderTurn(refusedTurn({ scopeMode: "auto", requestedKbIds: [] }));
     expect(screen.queryByText("在其他知识库中重新查找：")).toBeNull();
+  });
+});
+
+describe("TurnBody process summary", () => {
+  const answered = (overrides: Partial<Turn> = {}) => refusedTurn({
+    outcome: "answered", grounding: "grounded", answer: "答案", refusal: null, scopeExpanded: true,
+    searchedKbIds: ["ops", "dev"], retrievalCalls: 2, ...overrides,
+  });
+  const expand = (summaryOpen: () => void) => { summaryOpen(); };
+
+  it("keeps scope, count and expansion lines for old turns without tool calls", () => {
+    renderTurn(answered());
+    expand(() => fireEvent.click(screen.getByRole("button", { name: /参考了/ })));
+    expect(screen.getByText("检索范围：运维手册、研发文档")).toBeTruthy();
+    expect(screen.getByText("共检索 2 次")).toBeTruthy();
+    expect(screen.getByText("所选范围内证据不足，已扩大到全部知识库")).toBeTruthy();
+  });
+
+  it("drops the lines already shown by retrieval cards", () => {
+    const call = (id: string, reason: string) => ({
+      id, name: "retrieve_knowledge", status: "complete" as const,
+      args: { query: "q", kb_ids: ["ops"], reason }, result: { retrieved: 1 }, error: null,
+    });
+    renderTurn(answered({ toolCalls: [call("tc_01", "initial"), call("tc_02", "expand_scope")] }));
+    expand(() => fireEvent.click(screen.getByRole("button", { name: /参考了/ })));
+    expect(screen.queryByText(/检索范围/)).toBeNull();
+    expect(screen.queryByText(/共检索/)).toBeNull();
+    expect(screen.queryByText("所选范围内证据不足，已扩大到全部知识库")).toBeNull();
+    // 升级为深度检索没有对应的 escalate 卡片，仍然保留。
+    expect(screen.getByText("问题较复杂，已升级为深度检索")).toBeTruthy();
   });
 });

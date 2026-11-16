@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """范围必须来自持久化目录，模型建议不能创造知识库或覆盖显式选择。"""
 
@@ -10,12 +11,12 @@ from app.domain.knowledge_bases import KnowledgeBase
 from app.domain.errors import InvalidKnowledgeScopeError
 from app.domain.routing import KnowledgeScope
 from app.infrastructure.persistence.knowledge_bases import (
-    SQLiteKnowledgeBaseRepository,
+    PostgresKnowledgeBaseRepository,
 )
 
 
-def _catalog(tmp_path: Path) -> SQLiteKnowledgeBaseRepository:
-    catalog = SQLiteKnowledgeBaseRepository(tmp_path / "catalog.sqlite3")
+def _catalog(tmp_path: Path) -> PostgresKnowledgeBaseRepository:
+    catalog = PostgresKnowledgeBaseRepository(pg_database(tmp_path / "catalog.db"))
     catalog.create(KnowledgeBase(id="ops", name="运维手册", description="部署配置"))
     catalog.create(KnowledgeBase(id="dev", name="研发文档", description="架构开发"))
     return catalog
@@ -86,7 +87,7 @@ def test_catalog_persists_metadata_and_does_not_reset_admin_updates(tmp_path: Pa
     catalog = _catalog(tmp_path)
     default = catalog.get("default")
     catalog.update(default.model_copy(update={"name": "历史语料"}))
-    reopened = SQLiteKnowledgeBaseRepository(tmp_path / "catalog.sqlite3")
+    reopened = PostgresKnowledgeBaseRepository(pg_database(tmp_path / "catalog.db"))
     assert reopened.get("default").name == "历史语料"
     assert reopened.get("ops").description == "部署配置"
     assert [kb.id for kb in reopened.list()] == ["default", "dev", "ops"]

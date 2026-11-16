@@ -1,3 +1,4 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """可信本地账号初始化不从命令行参数、环境变量或默认口令读取密码。"""
 
@@ -21,7 +22,7 @@ def test_local_provisioning_prompts_for_password_and_creates_real_account(
         monkeypatch: 只替换终端隐藏输入。
         capsys: 检查公开输出。
     """
-    settings = Settings(_env_file=None, auth_db_path=tmp_path / "auth.sqlite3")
+    settings = Settings(_env_file=None, )
     monkeypatch.setattr(users, "getpass", lambda prompt: PASSWORD)
     monkeypatch.setattr(users, "get_settings", lambda: settings)
     assert users.main([
@@ -47,8 +48,9 @@ def test_password_confirmation_mismatch_does_not_create_account(
         tmp_path: 隔离认证数据库。
         monkeypatch: 隐藏输入序列。
     """
-    settings = Settings(_env_file=None, auth_db_path=tmp_path / "auth.sqlite3")
+    settings = Settings(_env_file=None, )
     answers = iter((PASSWORD, "different-passphrase"))
     monkeypatch.setattr(users, "getpass", lambda prompt: next(answers))
     assert users.main(["create", "--username", "alice", "--name", "Alice"], settings=settings) == 2
-    assert not settings.auth_db_path.exists()
+    with pg_connect() as connection:
+        assert connection.execute('SELECT COUNT(*) FROM users').fetchone()[0] == 0

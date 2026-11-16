@@ -1,8 +1,10 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """真实拒答快照与确定性语义向量归组，不以字符串相同代替语义。"""
 
 import json
-import sqlite3
+import psycopg
+from app.infrastructure.persistence.database import record_row, Record
 import asyncio
 import math
 from contextlib import AsyncExitStack
@@ -23,10 +25,10 @@ from app.application.insights.clustering import cluster_refusals
 from app.application.insights.clustering import normalize_vector
 from app.bootstrap.container import RuntimeOptions
 from app.bootstrap.container import build_application_container
-from app.infrastructure.persistence.insights import SQLiteRefusalReader
+from app.infrastructure.persistence.insights import PostgresRefusalReader
 from tests.http_auth import TEST_USER_ID
 from tests.test_ingestion_job_container import _settings
-from app.infrastructure.conversations.sqlite_repository import SQLiteConversationRepository
+from app.infrastructure.conversations.postgres_repository import PostgresConversationRepository
 from tests.test_refusal_insights_api import _refusal
 from tests.test_shares_api import _client
 from tests.test_unified_query_api import _app
@@ -41,12 +43,12 @@ def test_complete_link_prevents_cross_topic_similarity_bridges(tmp_path: Path) -
     Args:
         tmp_path: 实际正式轮次数据库。
     """
-    path = tmp_path / "business.sqlite3"
-    repository = SQLiteConversationRepository(path)
+    path = tmp_path / "business.db"
+    repository = PostgresConversationRepository(pg_database(path))
     for question in ("操作配置", "配置和成本的联系", "财务成本"):
         _refusal(repository, question=question)
     now = datetime.now(UTC)
-    sample = SQLiteRefusalReader(path).cluster_sample(
+    sample = PostgresRefusalReader(pg_database(path)).cluster_sample(
         now - timedelta(days=1), now, None,
     )
     vectors = []
@@ -68,15 +70,15 @@ def test_empty_cluster_runtime_needs_no_model_or_production_paths(tmp_path: Path
     """
     settings = _settings(tmp_path)
     root = build_application_container(settings, RuntimeOptions(
-        chroma_path=tmp_path / "isolated", collection_name="cluster-test",
+        artifacts_path=tmp_path / "isolated", collection_name="cluster-test",
     ))
     try:
         result = root.refusal_cluster_service.list(TEST_USER_ID)
         assert result.total_refusals == 0
         assert result.clusters == ()
-        assert not settings.conversation_db_path.exists()
-        assert not settings.trace_db_path.exists()
-        assert not settings.chroma_path.exists()
+        assert root.database.schema != settings.database_schema
+        assert root.database.schema != settings.database_schema
+        assert not settings.artifacts_path.exists()
     finally:
         root.close()
 
@@ -93,7 +95,7 @@ async def test_cluster_busy_and_model_deadline_release_execution_slot(
     """
     app, _, _ = _app(tmp_path)
     root = app.state.container
-    repository = SQLiteConversationRepository(root.settings.conversation_db_path)
+    repository = PostgresConversationRepository(pg_database(root.database))
     _refusal(repository)
     entered, release = Event(), Event()
     ticks = [100.0]
@@ -153,7 +155,7 @@ async def test_semantic_clusters_paginate_cache_and_invalidate_deleted_turns(
     """
     app, _, _ = _app(tmp_path, legacy_identity=False)
     root = app.state.container
-    repository = SQLiteConversationRepository(root.settings.conversation_db_path)
+    repository = PostgresConversationRepository(pg_database(root.database))
     first = _refusal(repository, question="Redis缓存如何设置", kb_ids=("ops",))
     second = _refusal(repository, question="怎样启用键值缓存", kb_ids=("ops",))
     third = _refusal(repository, question="Redis与关系数据库性能比较", kb_ids=("ops",))
@@ -203,7 +205,7 @@ async def test_semantic_clusters_paginate_cache_and_invalidate_deleted_turns(
                 "group": "cluster", "kb_id": "other", "cursor": cursor,
             })
             assert changed_scope.status_code == 422
-            with sqlite3.connect(root.settings.trace_db_path) as db:
+            with pg_connect(root.database) as db:
                 audits = db.execute("SELECT event_json FROM admin_access_audit").fetchall()
             assert len(audits) >= 2
             encoded = json.dumps(audits, ensure_ascii=False)
@@ -234,7 +236,7 @@ async def test_failed_embedding_batch_cannot_grow_cache_without_bound(
     """
     app, _, _ = _app(tmp_path)
     root = app.state.container
-    repository = SQLiteConversationRepository(root.settings.conversation_db_path)
+    repository = PostgresConversationRepository(pg_database(root.database))
     failures = False
 
     def embed(texts: list[str]) -> list[list[float]]:
@@ -281,7 +283,7 @@ async def test_cluster_rejects_invalid_vectors_without_lexical_fallback(
     """
     app, _, _ = _app(tmp_path)
     root = app.state.container
-    repository = SQLiteConversationRepository(root.settings.conversation_db_path)
+    repository = PostgresConversationRepository(pg_database(root.database))
     _refusal(repository, question="第一项缓存配置")
     _refusal(repository, question="第二项缓存配置")
     monkeypatch.setattr(root.embedding_provider, "embed_documents", lambda texts: vectors)
@@ -309,7 +311,7 @@ async def test_cluster_rechecks_deletion_after_model_call(
     """
     app, _, _ = _app(tmp_path)
     root = app.state.container
-    repository = SQLiteConversationRepository(root.settings.conversation_db_path)
+    repository = PostgresConversationRepository(pg_database(root.database))
     turn = _refusal(repository)
 
     def embed(texts: list[str]) -> list[list[float]]:
@@ -341,15 +343,15 @@ async def test_cluster_window_cap_counts_and_batches_are_explicit(
     """
     app, _, _ = _app(tmp_path)
     root = app.state.container
-    repository = SQLiteConversationRepository(root.settings.conversation_db_path)
+    repository = PostgresConversationRepository(pg_database(root.database))
     for index in range(505):
         _refusal(repository, question=f"配置缓存编号{index}", kb_ids=("ops",))
     _refusal(repository, question="别库问题不参与", kb_ids=("other",))
     old = _refusal(repository, question="过窗口问题不参与", kb_ids=("ops",))
     deleting = _refusal(repository, question="删除问题不参与", kb_ids=("ops",))
     repository.mark_deleting(deleting.conversation_id)
-    with sqlite3.connect(root.settings.conversation_db_path) as db:
-        db.execute("UPDATE conversation_turns SET created_at=? WHERE id=?", (
+    with pg_connect(root.database) as db:
+        db.execute("UPDATE conversation_turns SET created_at=%s WHERE id=%s", (
             (datetime.now(UTC) - timedelta(days=40)).isoformat(), str(old.id),
         ))
     requests = []
@@ -378,7 +380,7 @@ async def test_cluster_window_cap_counts_and_batches_are_explicit(
                 assert len(batch) <= 20
                 assert sum(len(text) for text in batch) <= 16000
                 assert all("不参与" not in text for text in batch)
-            with sqlite3.connect(root.settings.trace_db_path) as db:
+            with pg_connect(root.database) as db:
                 audits = db.execute("SELECT event_json FROM admin_access_audit").fetchall()
             assert len(audits) == 5
             assert all(len(json.loads(row[0])["resource_ids"]) == 100 for row in audits)
@@ -398,7 +400,7 @@ async def test_cluster_audit_failure_prevents_sending_questions_to_model(
     """
     app, _, _ = _app(tmp_path)
     root = app.state.container
-    repository = SQLiteConversationRepository(root.settings.conversation_db_path)
+    repository = PostgresConversationRepository(pg_database(root.database))
     _refusal(repository)
     requested = []
 
@@ -435,7 +437,7 @@ async def test_oversized_legacy_question_is_not_sent_or_silently_truncated(
     """
     app, _, _ = _app(tmp_path)
     root = app.state.container
-    repository = SQLiteConversationRepository(root.settings.conversation_db_path)
+    repository = PostgresConversationRepository(pg_database(root.database))
     _refusal(repository, question="长" * 16001)
     requested = []
 

@@ -1,7 +1,9 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """删除冻结与真实队列必须在同一SQLite事务边界生效。"""
 
-import sqlite3
+import psycopg
+from app.infrastructure.persistence.database import record_row, Record
 from datetime import UTC
 from datetime import datetime
 from pathlib import Path
@@ -15,10 +17,10 @@ from app.application.errors import KnowledgeBaseStorageError
 from app.domain.knowledge_bases import KnowledgeBase
 from app.domain.knowledge_deletion import KnowledgeDeletionPlan
 from app.domain.suggestions import CuratedQuestionsUpdate
-from app.infrastructure.persistence.ingestion_jobs import SQLiteIngestionJobRepository
-from app.infrastructure.persistence.knowledge_bases import SQLiteKnowledgeBaseRepository
-from app.infrastructure.persistence.knowledge_deletion import SQLiteKnowledgeDeletionRepository
-from app.infrastructure.persistence.knowledge_registry import SQLiteKnowledgeReadRegistry
+from app.infrastructure.persistence.ingestion_jobs import PostgresIngestionJobRepository
+from app.infrastructure.persistence.knowledge_bases import PostgresKnowledgeBaseRepository
+from app.infrastructure.persistence.knowledge_deletion import PostgresKnowledgeDeletionRepository
+from app.infrastructure.persistence.knowledge_registry import PostgresKnowledgeReadRegistry
 from tests.test_ingestion_job_repository import _submission
 
 
@@ -31,16 +33,16 @@ def test_delete_freeze_rejects_stale_enqueue_and_keeps_terminal_history(tmp_path
     Returns:
         None。
     """
-    path = tmp_path / "catalog.sqlite3"
-    catalog = SQLiteKnowledgeBaseRepository(path)
+    path = tmp_path / "catalog.db"
+    catalog = PostgresKnowledgeBaseRepository(pg_database(path))
     catalog.create(KnowledgeBase(id="ops", name="运维"))
-    jobs = SQLiteIngestionJobRepository(path)
+    jobs = PostgresIngestionJobRepository(pg_database(path))
     old = jobs.enqueue(_submission(), capacity=10)
     claim = jobs.claim_next(lease_seconds=60)
     jobs.fail(claim, code="parse_failed")
-    registry = SQLiteKnowledgeReadRegistry(path)
+    registry = PostgresKnowledgeReadRegistry(pg_database(path))
     registry.replace_curated("ops", CuratedQuestionsUpdate(questions=("公开原问题",)))
-    plans = SQLiteKnowledgeDeletionRepository(path)
+    plans = PostgresKnowledgeDeletionRepository(pg_database(path))
     plan = KnowledgeDeletionPlan(kb_id="ops", force=False, started_at=datetime.now(UTC))
     assert plans.begin(plan) == plan
     assert plans.get("ops") == plan
@@ -55,10 +57,10 @@ def test_delete_freeze_rejects_stale_enqueue_and_keeps_terminal_history(tmp_path
     assert plans.get("ops").state == "deleted"
     assert jobs.get(old.job_id).status == "failed"
     # 重开目录不能重建已删除ID；历史外键依然完整，不通过级联删任务回避约束。
-    reopened = SQLiteKnowledgeBaseRepository(path)
+    reopened = PostgresKnowledgeBaseRepository(pg_database(path))
     assert [row.id for row in reopened.list()] == ["default"]
-    with sqlite3.connect(path) as connection:
-        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    with pg_connect(path) as connection:
+        assert connection.execute("SELECT c.conname FROM pg_constraint c JOIN pg_namespace n ON n.oid=c.connamespace WHERE n.nspname=current_schema() AND c.contype='f' AND NOT c.convalidated").fetchall() == []
 
 
 def test_begin_cannot_cross_a_pending_job_commit(tmp_path: Path) -> None:
@@ -70,11 +72,11 @@ def test_begin_cannot_cross_a_pending_job_commit(tmp_path: Path) -> None:
     Returns:
         None。
     """
-    path = tmp_path / "catalog.sqlite3"
-    catalog = SQLiteKnowledgeBaseRepository(path)
+    path = tmp_path / "catalog.db"
+    catalog = PostgresKnowledgeBaseRepository(pg_database(path))
     catalog.create(KnowledgeBase(id="ops", name="运维"))
-    jobs = SQLiteIngestionJobRepository(path)
-    plans = SQLiteKnowledgeDeletionRepository(path)
+    jobs = PostgresIngestionJobRepository(pg_database(path))
+    plans = PostgresKnowledgeDeletionRepository(pg_database(path))
     plan = KnowledgeDeletionPlan(kb_id="ops", force=True, started_at=datetime.now(UTC))
     jobs.enqueue(_submission(), capacity=10)
     with pytest.raises(KnowledgeBaseIngestionBusyError):
@@ -94,20 +96,20 @@ def test_corrupt_plan_cannot_become_a_new_or_completed_operation(tmp_path: Path,
     Returns:
         None。
     """
-    path = tmp_path / "catalog.sqlite3"
-    catalog = SQLiteKnowledgeBaseRepository(path)
+    path = tmp_path / "catalog.db"
+    catalog = PostgresKnowledgeBaseRepository(pg_database(path))
     catalog.create(KnowledgeBase(id="ops", name="运维"))
-    SQLiteIngestionJobRepository(path)
-    plans = SQLiteKnowledgeDeletionRepository(path)
+    PostgresIngestionJobRepository(pg_database(path))
+    plans = PostgresKnowledgeDeletionRepository(pg_database(path))
     plan = KnowledgeDeletionPlan(kb_id="ops", force=False, started_at=datetime.now(UTC))
     plans.begin(plan)
-    with sqlite3.connect(path) as connection:
+    with pg_connect(path) as connection:
         if corrupt == "state":
             connection.execute("UPDATE knowledge_bases SET lifecycle='active' WHERE id='ops'")
         else:
             value = "not json"
             if corrupt == "identity":
                 value = plan.model_copy(update={"kb_id": "another"}).model_dump_json()
-            connection.execute("UPDATE knowledge_deletion_plans SET plan_json=?", (value,))
+            connection.execute("UPDATE knowledge_deletion_plans SET plan_json=%s", (value,))
     with pytest.raises(KnowledgeBaseStorageError):
         plans.get("ops")

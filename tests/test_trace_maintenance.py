@@ -1,7 +1,9 @@
+from tests.postgres_support import pg_database, pg_connect
 # -*- coding: utf-8 -*-
 """应用生命周期必须定期清理过期追踪，不删除保留期内记录。"""
 
-import sqlite3
+import psycopg
+from app.infrastructure.persistence.database import record_row, Record
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
@@ -29,7 +31,7 @@ async def test_lifespan_prunes_expired_traces_without_requests(
         monkeypatch: 缩短维护等待，仅观察真实删除结果。
     """
     settings = Settings(
-        _env_file=None, trace_db_path=tmp_path / "traces.sqlite3",
+        _env_file=None,
         trace_cleanup_interval_seconds=0.01,
         ingestion_worker_enabled=False,
     )
@@ -55,7 +57,7 @@ async def test_lifespan_prunes_expired_traces_without_requests(
         with anyio.fail_after(1):
             while not cleaned.is_set():
                 await anyio.sleep(0.005)
-        with sqlite3.connect(settings.trace_db_path) as connection:
+        with pg_connect() as connection:
             ids = connection.execute("SELECT trace_id FROM traces").fetchall()
         assert (str(expired.id),) not in ids
-        assert ids == [(str(current.id),)]
+        assert [row[0] for row in ids] == [str(current.id)]

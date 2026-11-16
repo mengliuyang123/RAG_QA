@@ -29,7 +29,10 @@ class Settings(BaseSettings):
     )
 
     openai_api_key: str | None = None
-    auth_db_path: Path = PROJECT_ROOT / "data" / "auth" / "auth.sqlite3"
+    database_url: str = Field(default='', repr=False)
+    database_schema: str = 'rag_qa'
+    evaluation_database_schema: str = 'rag_qa_evaluation'
+    test_database_url: str | None = Field(default=None, repr=False)
     auth_secure_cookie: bool = True
     auth_session_seconds: int = Field(default=43200, ge=60)
     auth_idle_seconds: int = Field(default=1800, ge=1)
@@ -37,7 +40,7 @@ class Settings(BaseSettings):
     auth_login_window_seconds: int = Field(default=60, ge=1)
     http_allowed_hosts: tuple[str, ...] = ("localhost", "127.0.0.1", "[::1]")
     cors_allowed_origins: tuple[str, ...] = (
-        "http://localhost:5173", "http://127.0.0.1:5173",
+        "http://localhost:15173", "http://127.0.0.1:15173",
     )
 
     llm_api_key: str | None = None
@@ -82,6 +85,8 @@ class Settings(BaseSettings):
     embedding_api_key: str | None = None
     embedding_base_url: str = OPENAI_BASE_URL
     embedding_model: str = "text-embedding-3-small"
+    # 为空时使用模型默认维度；更换维度后已有向量不再兼容，需要重建索引。
+    embedding_dimensions: int | None = Field(default=None, ge=1, le=16000)
 
     reranker_api_key: str | None = None
     reranker_base_url: str | None = None
@@ -103,8 +108,8 @@ class Settings(BaseSettings):
         "max_tokens", "max_completion_tokens",
     ] = "max_tokens"
 
-    evaluation_chroma_path: Path = (
-        PROJECT_ROOT / "data" / "evaluation" / "chroma"
+    evaluation_artifacts_path: Path = (
+        PROJECT_ROOT / "data" / "evaluation" / "artifacts"
     )
     evaluation_collection_prefix: str = "rag_eval"
     evaluation_results_path: Path = PROJECT_ROOT / "evaluation" / "results"
@@ -116,22 +121,12 @@ class Settings(BaseSettings):
     evaluation_rgb_temperature: float = Field(default=0.2, ge=0)
     evaluation_judge_temperature: float = Field(default=0.0, ge=0)
 
-    conversation_db_path: Path = (
-        PROJECT_ROOT / "data" / "conversations" / "conversations.sqlite3"
-    )
-    knowledge_base_db_path: Path = (
-        PROJECT_ROOT / "data" / "knowledge" / "catalog.sqlite3"
-    )
-    trace_db_path: Path = PROJECT_ROOT / "data" / "traces" / "traces.sqlite3"
     trace_capture_queries: bool = False
     trace_retention_days: int = Field(default=30, ge=1, le=3650)
     trace_cleanup_interval_seconds: float = Field(
         default=3600.0, gt=0, allow_inf_nan=False,
     )
     trace_model_prices: tuple[ModelPrice, ...] = ()
-    agent_checkpoint_db_path: Path = (
-        PROJECT_ROOT / "data" / "conversations" / "checkpoints.sqlite3"
-    )
     conversation_history_turns: int = Field(default=6, ge=1)
     conversation_context_tokens: int = Field(default=32768, ge=1)
     conversation_reserved_tokens: int = Field(default=16384, ge=0)
@@ -153,7 +148,7 @@ class Settings(BaseSettings):
     top_k_rerank: int = Field(default=20, ge=1)
 
     docs_path: Path = PROJECT_ROOT / "data" / "docs"
-    chroma_path: Path = PROJECT_ROOT / "data" / "chroma"
+    artifacts_path: Path = PROJECT_ROOT / "data" / "runtime"
     collection_name: str = "knowledge_base"
     max_upload_size: int = Field(default=20 * 1024 * 1024, gt=0)
     ingestion_queue_capacity: int = Field(default=16, ge=1, le=1000)
@@ -169,6 +164,12 @@ class Settings(BaseSettings):
     )
 
     log_level: str = "INFO"
+
+    @field_validator('database_schema', 'evaluation_database_schema')
+    @classmethod
+    def validate_database_schema(cls, value: str) -> str:
+        from app.infrastructure.persistence.database import validate_schema
+        return validate_schema(value)
 
     @field_validator("http_allowed_hosts")
     @classmethod
@@ -462,10 +463,8 @@ class Settings(BaseSettings):
         Raises:
             ValueError: 评估路径未隔离或裁判配置不完整、不独立。
         """
-        production_path = self.chroma_path.resolve()
-        evaluation_path = self.evaluation_chroma_path.resolve()
-        if production_path == evaluation_path:
-            raise ValueError("评估 Chroma 路径必须与生产路径隔离")
+        if self.database_schema == self.evaluation_database_schema:
+            raise ValueError("评估 PostgreSQL schema 必须与生产 schema 隔离")
 
         judge_values = (
             self.evaluation_judge_api_key,

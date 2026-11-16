@@ -43,7 +43,7 @@ def test_real_evaluation_runtime_runs_one_qa_with_all_strategies(
 
     isolated = settings.model_copy(
         update={
-            "evaluation_chroma_path": tmp_path / "chroma",
+            "evaluation_artifacts_path": tmp_path / "chroma",
             "evaluation_collection_prefix": "integration_eval",
         }
     )

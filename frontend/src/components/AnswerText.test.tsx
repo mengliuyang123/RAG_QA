@@ -58,4 +58,23 @@ describe("AnswerText", () => {
     );
     expect(container.querySelector("img")).toBeNull();
   });
+
+  it("renders markdown formatting instead of raw markers", () => {
+    const onCite = vi.fn();
+    const citation = makeCitation(1, "a.md");
+    const { container } = render(
+      <AnswerText
+        answer={"**结论** 是这样 [1]\n\n```python\nprint('hi')\n```"}
+        citations={[citation]}
+        activePosition={null}
+        onCite={onCite}
+      />,
+    );
+    // 加粗不再以 ** 字面量出现，代码块渲染为 pre>code，引用按钮照常工作。
+    const strong = container.querySelector("strong");
+    expect(strong?.textContent).toBe("结论");
+    expect(container.textContent).not.toContain("**");
+    expect(container.querySelector("pre code")?.textContent).toContain("print('hi')");
+    expect(screen.getByRole("button", { name: "查看来源 1：a.md" })).toBeTruthy();
+  });
 });

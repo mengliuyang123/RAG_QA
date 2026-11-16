@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """在目录数据库原子冻结新入队并保存跨存储删除恢复身份。"""
 
-import sqlite3
+import psycopg
+from app.infrastructure.persistence.database import Database, Record
 from collections.abc import Iterator
 from contextlib import closing
 from contextlib import contextmanager
@@ -15,24 +16,11 @@ from app.domain.knowledge_bases import DEFAULT_KB_ID
 from app.domain.knowledge_deletion import KnowledgeDeletionPlan
 
 
-class SQLiteKnowledgeDeletionRepository:
+class PostgresKnowledgeDeletionRepository:
     """计划先落库，历史任务的外键与正式引用无需删除或重写。"""
 
-    def __init__(self, path: Path) -> None:
-        """只初始化计划表，目录与任务schema由组合根先初始化。
-
-        Args:
-            path: 本运行目录与任务共用数据库。
-
-        Returns:
-            None。
-        """
-        self._path = path
-        with self._connection() as connection:
-            connection.execute("""CREATE TABLE IF NOT EXISTS knowledge_deletion_plans (
-                kb_id TEXT PRIMARY KEY, plan_json TEXT NOT NULL,
-                FOREIGN KEY(kb_id) REFERENCES knowledge_bases(id) ON DELETE RESTRICT
-            )""")
+    def __init__(self, database: Database) -> None:
+        self._database = database
 
     def get(self, kb_id: str) -> KnowledgeDeletionPlan | None:
         """核对目录状态与计划，不允许损坏计划被误认为首次请求。
@@ -60,12 +48,12 @@ class SQLiteKnowledgeDeletionRepository:
         if plan.state != "deleting":
             raise KnowledgeBaseStorageError("首次删除计划状态不正确")
         with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || 'business_write', 0))")
             previous = self._get(connection, plan.kb_id)
             if previous is not None:
                 return previous
             row = connection.execute(
-                "SELECT lifecycle FROM knowledge_bases WHERE id = ?",
+                "SELECT lifecycle FROM knowledge_bases WHERE id = %s",
                 (plan.kb_id,),
             ).fetchone()
             if row is None:
@@ -73,18 +61,18 @@ class SQLiteKnowledgeDeletionRepository:
             if row[0] != "active":
                 raise KnowledgeBaseStorageError("知识库状态缺少对应删除计划")
             busy = connection.execute(
-                "SELECT 1 FROM ingestion_jobs WHERE kb_id = ? "
+                "SELECT 1 FROM ingestion_jobs WHERE kb_id = %s "
                 "AND (status NOT IN ('succeeded','failed') OR status IS NULL) LIMIT 1",
                 (plan.kb_id,),
             ).fetchone()
             if busy is not None:
                 raise KnowledgeBaseIngestionBusyError("知识库仍有入库任务")
             connection.execute(
-                "INSERT INTO knowledge_deletion_plans VALUES (?, ?)",
+                "INSERT INTO knowledge_deletion_plans VALUES (%s, %s)",
                 (plan.kb_id, plan.model_dump_json()),
             )
             connection.execute(
-                "UPDATE knowledge_bases SET lifecycle='deleting' WHERE id=?",
+                "UPDATE knowledge_bases SET lifecycle='deleting' WHERE id=%s",
                 (plan.kb_id,),
             )
         return plan
@@ -99,24 +87,24 @@ class SQLiteKnowledgeDeletionRepository:
             None。
         """
         with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || 'business_write', 0))")
             actual = self._get(connection, plan.kb_id)
             if actual != plan or plan.state != "deleting":
                 raise KnowledgeBaseStorageError("删除计划状态已经变化")
             completed = plan.model_copy(update={"state": "deleted"})
             connection.execute(
-                "UPDATE knowledge_deletion_plans SET plan_json=? WHERE kb_id=?",
+                "UPDATE knowledge_deletion_plans SET plan_json=%s WHERE kb_id=%s",
                 (completed.model_dump_json(), plan.kb_id),
             )
             connection.execute(
-                "UPDATE knowledge_bases SET lifecycle='deleted' WHERE id=?",
+                "UPDATE knowledge_bases SET lifecycle='deleted' WHERE id=%s",
                 (plan.kb_id,),
             )
 
-    def _get(self, connection: sqlite3.Connection, kb_id: str) -> KnowledgeDeletionPlan | None:
+    def _get(self, connection: psycopg.Connection, kb_id: str) -> KnowledgeDeletionPlan | None:
         row = connection.execute(
             "SELECT p.plan_json, k.lifecycle FROM knowledge_deletion_plans p "
-            "JOIN knowledge_bases k ON k.id=p.kb_id WHERE p.kb_id=?", (kb_id,),
+            "JOIN knowledge_bases k ON k.id=p.kb_id WHERE p.kb_id=%s", (kb_id,),
         ).fetchone()
         if row is None:
             return None
@@ -126,11 +114,9 @@ class SQLiteKnowledgeDeletionRepository:
         return plan
 
     @contextmanager
-    def _connection(self) -> Iterator[sqlite3.Connection]:
+    def _connection(self) -> Iterator[psycopg.Connection]:
         try:
-            with closing(sqlite3.connect(self._path, timeout=5)) as connection:
-                connection.execute("PRAGMA foreign_keys = ON")
-                with connection:
-                    yield connection
-        except (sqlite3.Error, OSError, ValueError) as error:
-            raise KnowledgeBaseStorageError("知识库删除登记暂时不可用") from error
+            with self._database.connection() as connection:
+                yield connection
+        except (psycopg.Error, ValueError, OSError) as exc:
+            raise KnowledgeBaseStorageError("PostgreSQL 仓储操作失败") from exc

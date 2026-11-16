@@ -12,6 +12,7 @@ from fastapi import Query
 from fastapi import Request
 from fastapi import Response
 
+from app.interfaces.http.container_runtime import current_container
 from app.application.knowledge.browse import KnowledgeBrowseService
 from app.domain.knowledge_bases import KB_ID_PATTERN
 from app.domain.knowledge_views import DocumentContext
@@ -31,7 +32,7 @@ def get_knowledge_browse(request: Request) -> KnowledgeBrowseService:
     Returns:
         本应用共享的浏览服务。
     """
-    return request.app.state.container.knowledge_browse_service
+    return current_container(request).knowledge_browse_service
 
 
 @router.get("/suggested-questions", response_model=SuggestedQuestions)
