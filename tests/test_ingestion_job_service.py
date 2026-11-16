@@ -95,8 +95,8 @@ def test_unknown_commit_outcome_keeps_source_for_possible_committed_job(
     service, jobs = _service(tmp_path)
     original = jobs.enqueue
 
-    def lost_response(submission, *, capacity: int):
-        original(submission, capacity=capacity)
+    def lost_response(submission, *, capacity: int, **options):
+        original(submission, capacity=capacity, **options)
         raise IngestionJobStorageError("commit response lost")
 
     monkeypatch.setattr(jobs, "enqueue", lost_response)

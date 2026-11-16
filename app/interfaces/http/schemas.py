@@ -225,7 +225,7 @@ class DocumentSummaryResponse(BaseModel):
 
     doc_id: UUID
     filename: str
-    chunks_count: int = Field(ge=1)
+    chunks_count: int = Field(ge=0)
     created_at: datetime | None
     file_status: DocumentFileStatus
     kb_id: str | None = None

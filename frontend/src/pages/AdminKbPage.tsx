@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import type { KbDocument, KbInsight, UploadProgress } from "../api/types";
+import { UploadConflictError } from "../api/mock";
+import type {
+  ExistingDocument,
+  KbDocument,
+  KbInsight,
+  UploadConflictChoice,
+  UploadProgress,
+  UploadResult,
+} from "../api/types";
 import { Icon } from "../components/Icon";
 import { Topbar } from "../components/Layout";
 import { useApp } from "../state/AppContext";
@@ -35,6 +43,39 @@ function above(value: number | null, threshold: number): boolean {
 }
 
 const KB_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
+
+interface PendingConflict {
+  filename: string;
+  existing: ExistingDocument;
+  resolve(choice: UploadConflictChoice | null): void;
+}
+
+// 同名但内容不同：让管理员选择作为新版本替换，或另存为一篇。
+function ConflictDialog({ conflict }: { conflict: PendingConflict }) {
+  return (
+    <div
+      style={{
+        position: "fixed", inset: 0, zIndex: 50, display: "flex", alignItems: "center",
+        justifyContent: "center", padding: 16, background: "color-mix(in oklab, black 40%, transparent)",
+      }}
+    >
+      <div role="dialog" aria-modal="true" aria-labelledby="conflict-title" className="card" style={{ maxWidth: 440, width: "100%" }}>
+        <h2 id="conflict-title" style={{ fontSize: 16, marginBottom: 8 }}>已有同名文档</h2>
+        <p style={{ marginBottom: 6, wordBreak: "break-all" }}>
+          知识库中已有“{conflict.existing.filename}”，但内容与本次上传的“{conflict.filename}”不同。
+        </p>
+        <p className="muted" style={{ fontSize: 12, marginBottom: 12 }}>
+          替换：新版本入库成功后才删除旧版本，期间检索仍使用旧版本；入库失败则旧版本保持不变。
+        </p>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button type="button" className="btn btn-primary" onClick={() => conflict.resolve("replace")}>作为新版本替换</button>
+          <button type="button" className="btn" onClick={() => conflict.resolve("keep_both")}>另存为一篇</button>
+          <button type="button" className="btn" onClick={() => conflict.resolve(null)}>取消</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function NewKnowledgeBaseForm({ onCreated, onCancel }: { onCreated(id: string): void; onCancel(): void }) {
   const [id, setId] = useState("");
@@ -91,6 +132,19 @@ export function AdminKbPage() {
   const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const [creating, setCreating] = useState(false);
+  const [conflict, setConflict] = useState<PendingConflict | null>(null);
+
+  const askConflict = (filename: string, existing: ExistingDocument) =>
+    new Promise<UploadConflictChoice | null>((resolve) => {
+      setConflict({
+        filename,
+        existing,
+        resolve: (choice) => {
+          setConflict(null);
+          resolve(choice);
+        },
+      });
+    });
 
   const kbId = selected ?? knowledgeBases[0]?.id ?? null;
   const kb = knowledgeBases.find((item) => item.id === kbId) ?? null;
@@ -123,10 +177,34 @@ export function AdminKbPage() {
       setUploads((rows) => [...rows, { key, filename: file.name, progress: { stage: "uploading", progress: 0 }, error: null }]);
       const update = (patch: Partial<UploadRow>) =>
         setUploads((rows) => rows.map((row) => (row.key === key ? { ...row, ...patch } : row)));
+      const onProgress = (progress: UploadProgress) => update({ progress });
+      const dropRow = () => setUploads((rows) => rows.filter((row) => row.key !== key));
       try {
-        await api.admin.uploadDocument(kbId, file, (progress) => update({ progress }));
-        setUploads((rows) => rows.filter((row) => row.key !== key));
-        await Promise.all([loadDocuments(), refreshKnowledgeBases()]);
+        let result: UploadResult;
+        let replaced = false;
+        try {
+          result = await api.admin.uploadDocument(kbId, file, onProgress);
+        } catch (error) {
+          if (!(error instanceof UploadConflictError)) throw error;
+          const choice = await askConflict(file.name, error.existing);
+          if (choice === null) {
+            dropRow();
+            setMessage({ kind: "ok", text: `已取消上传 ${file.name}` });
+            continue;
+          }
+          replaced = choice === "replace";
+          result = await api.admin.uploadDocument(kbId, file, onProgress, {
+            onConflict: choice,
+            replaceDocId: replaced ? error.existing.docId : undefined,
+          });
+        }
+        dropRow();
+        if (result.kind === "exists") {
+          setMessage({ kind: "ok", text: `“${file.name}”已存在（与“${result.existing.filename}”内容相同），未重复入库` });
+        } else {
+          setMessage({ kind: "ok", text: replaced ? `已用新版本替换 ${file.name}` : `已上传 ${file.name}` });
+          await Promise.all([loadDocuments(), refreshKnowledgeBases()]);
+        }
       } catch (error) {
         update({ error: (error as Error).message });
       }
@@ -311,7 +389,9 @@ export function AdminKbPage() {
                         <td style={{ wordBreak: "break-all" }}>{doc.filename}</td>
                         <td className="num">{doc.chunksCount}</td>
                         <td>
-                          {doc.fileStatus === "available"
+                          {doc.ingestionFailed
+                            ? <span className="chip chip-danger" title="入库失败，没有文本块，可删除后重新上传">入库失败</span>
+                            : doc.fileStatus === "available"
                             ? <span className="chip chip-success">可用</span>
                             : <span className="chip chip-danger" title="索引仍在，但源文件已丢失，建议重新上传">源文件缺失</span>}
                         </td>
@@ -334,6 +414,7 @@ export function AdminKbPage() {
           )}
         </div>
       </div>
+      {conflict && <ConflictDialog conflict={conflict} />}
     </>
   );
 }

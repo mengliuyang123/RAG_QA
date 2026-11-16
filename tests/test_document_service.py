@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event
 from threading import RLock
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -47,11 +48,20 @@ class FakeStore:
     def __init__(self, chunks: list[DocumentChunk]) -> None:
         self.chunks = chunks
         self.list_calls = 0
+        self.header_calls = 0
 
     def list_chunks(self) -> list[DocumentChunk]:
         """记录快照调用并返回文本块副本。"""
         self.list_calls += 1
         return list(self.chunks)
+
+    def list_chunk_headers(self, doc_id: UUID) -> tuple[SimpleNamespace, ...]:
+        """按 doc_id 只读该文档自身的分块头，删除不再读取整个向量库。"""
+        self.header_calls += 1
+        return tuple(
+            SimpleNamespace(kb_id=chunk.kb_id, filename=chunk.filename)
+            for chunk in self.chunks if chunk.doc_id == str(doc_id)
+        )
 
 
 class FakePipeline:
@@ -67,6 +77,19 @@ class FakePipeline:
         if self.error is not None:
             raise self.error
 
+    def get(self, doc_id: UUID) -> None:
+        """测试文档都是未登记的旧文档。"""
+        return None
+
+    def replaced_by(self, doc_id: UUID) -> None:
+        """测试不涉及替换。"""
+        return None
+
+    def delete_documents(self, targets: dict[UUID, str]) -> None:
+        """登记仓储按 doc_id 删除分块，测试复用逐个记录。"""
+        for doc_id in targets:
+            self.delete_document(str(doc_id))
+
 
 def _service(
     tmp_path: Path,
@@ -79,6 +102,7 @@ def _service(
         docs_path=tmp_path / "docs",
         vector_store=FakeStore(chunks),
         ingestion_pipeline=selected_pipeline,
+        registry=selected_pipeline,
         repair_log=RepairLog(
             repair_path,
             now=lambda: datetime(
@@ -112,15 +136,15 @@ def test_concurrent_delete_does_not_report_false_file_cleanup_failure(
     class RecordingStore(FakeStore):
         """标记第二次语料快照读取的存储。"""
 
-        def list_chunks(self) -> list[DocumentChunk]:
-            """记录第二次快照读取是否越过共享锁。
+        def list_chunk_headers(self, doc_id: UUID) -> tuple[SimpleNamespace, ...]:
+            """记录第二次身份读取是否越过共享锁。
 
             Returns:
-                当前文本块快照。
+                当前文档分块头。
             """
-            if self.list_calls > 0:
+            if self.header_calls > 0:
                 second_lookup.set()
-            return super().list_chunks()
+            return super().list_chunk_headers(doc_id)
 
     store = RecordingStore([_chunk(DOCUMENT_ID, "notes.md")])
 
@@ -148,9 +172,10 @@ def test_concurrent_delete_does_not_report_false_file_cleanup_failure(
     source = docs / f"{DOCUMENT_ID}_notes.md"
     source.write_text("source", encoding="utf-8")
     repair_path = tmp_path / "repair.jsonl"
+    holding = HoldingPipeline()
     service = DocumentService(
         docs_path=docs, vector_store=store,
-        ingestion_pipeline=HoldingPipeline(), repair_log=RepairLog(repair_path),
+        ingestion_pipeline=holding, registry=holding, repair_log=RepairLog(repair_path),
         mutation_lock=lock,
     )
 
@@ -379,6 +404,27 @@ def test_delete_missing_document_does_not_mutate_index(
 
     assert pipeline.deleted == []
     assert not repair_path.exists()
+
+
+def test_delete_reads_only_the_target_document_not_the_whole_store(tmp_path: Path) -> None:
+    """按 doc_id 删除只查询该文档自身的分块头，绝不读取整个向量库。"""
+    service, pipeline, _ = _service(
+        tmp_path, [_chunk(DOCUMENT_ID, "notes.md"), _chunk(SECOND_DOCUMENT_ID, "other.md")],
+    )
+    store = service._vector_store
+    service.delete_document(UUID(DOCUMENT_ID))
+    assert store.list_calls == 0
+    assert pipeline.deleted == [DOCUMENT_ID]
+
+
+def test_batch_delete_validates_every_identity_before_deleting(tmp_path: Path) -> None:
+    """批量删除中任一身份不安全时整批不删，避免前半批已删。"""
+    service, pipeline, _ = _service(
+        tmp_path, [_chunk(DOCUMENT_ID, "notes.md"), _chunk(SECOND_DOCUMENT_ID, "../evil.md")],
+    )
+    with pytest.raises(DocumentStorageCorruptionError):
+        service.delete_documents((UUID(DOCUMENT_ID), UUID(SECOND_DOCUMENT_ID)))
+    assert pipeline.deleted == []
 
 
 def test_index_delete_failure_preserves_source_and_repair_log(

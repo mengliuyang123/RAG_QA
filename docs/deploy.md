@@ -80,6 +80,15 @@ NPM_REGISTRY=https://registry.npmmirror.com
 
 `.env` 里的 `DATABASE_URL` 不用改，compose 会把它替换成容器内的数据库地址。
 
+`.env` 是以文件形式挂进后端容器的。管理后台「模型配置」页保存时会直接改写这个文件，所以重建容器后修改依然有效。容器里的后端以 uid 1000 运行，需要让它能写这个文件：
+
+```bash
+sudo chown 1000:1000 .env
+chmod 600 .env
+```
+
+不改的话，管理后台保存模型配置会失败，其他功能不受影响。
+
 启动：
 
 ```bash

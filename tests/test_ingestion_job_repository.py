@@ -57,7 +57,8 @@ def _submission(kb_id: str = "ops") -> IngestionJobSubmission:
     return IngestionJobSubmission(
         job_id=f"job_{uuid4().hex}", doc_id=uuid4(), kb_id=kb_id,
         filename="部署说明.md", size_bytes=14, uploaded_by=uuid4(),
-        content_sha256="a" * 64,
+        # 同库同内容会被 documents 查重拒绝，每个提交使用不同摘要。
+        content_sha256=uuid4().hex * 2,
     )
 
 

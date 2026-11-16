@@ -503,14 +503,15 @@ async def test_force_index_failure_keeps_source_and_restores_bm25_then_retries(
     source.write_bytes(b"source")
     assert root.keyword_index.search("needle", 5, kb_ids=("ops",))
 
-    def _fail(doc_id: str) -> None:
+    def _fail(targets: object) -> None:
         raise VectorStoreError("内部故障路径")
 
     app = allow_test_identity(create_app(settings=settings, container_factory=lambda settings: root))
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             with monkeypatch.context() as patch:
-                patch.setattr(root.vector_store, "delete_document", _fail)
+                # 分块删除现在由 documents 登记按 doc_id 在一个事务内完成。
+                patch.setattr(root.document_registry, "delete_documents", _fail)
                 response = await client.delete("/api/admin/knowledge-bases/ops", params={"force": True})
                 assert response.status_code == 500
                 assert response.json()["error"]["code"] == "knowledge_base_delete_partial"
@@ -617,18 +618,18 @@ async def test_bulk_partial_delete_keeps_original_two_document_plan(
         source.write_bytes(b"source")
         sources.append(source)
     root.vector_store.add_chunks(chunks, [[1.0, 0.0]] * 2)
-    delete = root.vector_store.delete_document
+    delete = root.document_registry.delete_documents
 
-    def _delete(doc_id: str) -> None:
-        if doc_id == str(identifiers[1]):
+    def _delete(targets: dict) -> None:
+        if identifiers[1] in targets:
             raise VectorStoreError("second index failed")
-        delete(doc_id)
+        delete(targets)
 
     app = allow_test_identity(create_app(settings=settings, container_factory=lambda settings: root))
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             with monkeypatch.context() as patch:
-                patch.setattr(root.vector_store, "delete_document", _delete)
+                patch.setattr(root.document_registry, "delete_documents", _delete)
                 response = await client.delete("/api/admin/knowledge-bases/ops", params={"force": True})
                 assert response.status_code == 500
                 assert not sources[0].exists()

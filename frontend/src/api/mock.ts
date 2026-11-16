@@ -10,6 +10,7 @@ import {
 import type {
   Api,
   Citation,
+  ExistingDocument,
   ChunkContext,
   Conversation,
   ConversationSummary,
@@ -32,6 +33,30 @@ export class ApiError extends Error {
     this.status = status;
     this.code = code;
   }
+}
+
+/** 同名不同内容：前端据此弹出"替换 / 另存为一篇"选择框。 */
+export class UploadConflictError extends ApiError {
+  readonly existing: ExistingDocument;
+
+  constructor(message: string, existing: ExistingDocument) {
+    super(409, message, "document_name_conflict");
+    this.existing = existing;
+  }
+}
+
+function toExisting(doc: MockDocument): ExistingDocument {
+  return { docId: doc.docId, kbId: doc.kbId, filename: doc.filename, status: "ready", uploadedAt: doc.updatedAt };
+}
+
+async function readText(file: File): Promise<string> {
+  if (typeof file.text === "function") return file.text();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsText(file);
+  });
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -558,7 +583,17 @@ export function createMockApi(): Api {
         return documents.filter((doc) => !kbId || doc.kbId === kbId).map(toDocument);
       },
 
-      async uploadDocument(kbId, file, onProgress) {
+      async uploadDocument(kbId, file, onProgress, options = {}) {
+        const content = await readText(file);
+        const live = documents.filter((doc) => doc.kbId === kbId);
+        const same = live.find((doc) => doc.content !== undefined && doc.content === content);
+        if (same) return { kind: "exists", existing: toExisting(same) };
+        const named = options.replaceDocId
+          ? live.find((doc) => doc.docId === options.replaceDocId)
+          : live.find((doc) => doc.filename === file.name);
+        if (named && !options.onConflict) {
+          throw new UploadConflictError("知识库中已有同名文档，请选择替换或另存为一篇", toExisting(named));
+        }
         const stages = ["uploading", "parsing", "chunking", "embedding", "indexing"] as const;
         for (const stage of stages) {
           if (stage === "embedding") {
@@ -578,10 +613,15 @@ export function createMockApi(): Api {
           updatedAt: new Date().toISOString(),
           fileStatus: "available",
           chunks: [{ text: `${file.name} 的示例内容。`, page: null }],
+          content,
         };
         documents.unshift(doc);
+        // 新版本入库完成后才移除旧版本，与后端替换语义一致。
+        if (named && options.onConflict === "replace") {
+          documents.splice(documents.indexOf(named), 1);
+        }
         onProgress({ stage: "done", progress: 1 });
-        return toDocument(doc);
+        return { kind: "uploaded", document: toDocument(doc) };
       },
 
       async deleteDocument(docId) {
@@ -589,6 +629,22 @@ export function createMockApi(): Api {
         const index = documents.findIndex((doc) => doc.docId === docId);
         if (index === -1) throw new ApiError(404, "文档不存在", "not_found");
         documents.splice(index, 1);
+      },
+
+      async deleteDocuments(docIds) {
+        await sleep(150);
+        const deleted: string[] = [];
+        const notFound: string[] = [];
+        for (const docId of new Set(docIds)) {
+          const index = documents.findIndex((doc) => doc.docId === docId);
+          if (index === -1) {
+            notFound.push(docId);
+          } else {
+            documents.splice(index, 1);
+            deleted.push(docId);
+          }
+        }
+        return { deleted, notFound };
       },
 
       async createKnowledgeBase(kb) {

@@ -27,6 +27,10 @@ from app.domain.ingestion_jobs import IngestionJobFailure
 from app.domain.ingestion_jobs import IngestionJobSubmission
 from app.domain.ingestion_jobs import IngestionStage
 from app.domain.ingestion_jobs import DocumentJobInfo
+from app.domain.documents import ConflictResolution
+from app.infrastructure.persistence.documents import fail_document
+from app.infrastructure.persistence.documents import publish_document
+from app.infrastructure.persistence.documents import register_upload
 
 
 STAGES = ("parsing", "chunking", "embedding", "indexing")
@@ -113,12 +117,16 @@ class PostgresIngestionJobRepository:
 
     def enqueue(
         self, submission: IngestionJobSubmission, *, capacity: int,
+        conflict: ConflictResolution | None = "keep_both",
+        replace_doc_id: UUID | None = None,
     ) -> IngestionJob:
-        """事务内核对目录、重复身份和非终态容量，然后持久入队。
+        """事务内核对目录、重复身份、内容查重和非终态容量，然后持久入队。
 
         Args:
             submission: 服务端已保存文件的身份和完整性资料。
             capacity: 排队和运行任务合计上限。
+            conflict: 同名文档时用户的选择；None 表示需要用户选择。
+            replace_doc_id: 替换时明确指定的旧文档。
 
         Returns:
             持久入队的公开任务。
@@ -148,6 +156,12 @@ class PostgresIngestionJobRepository:
             ).fetchone()[0]
             if active_count >= capacity:
                 raise IngestionQueueFullError("入库队列已满，请稍后重试")
+            register_upload(
+                connection, doc_id=submission.doc_id, kb_id=submission.kb_id,
+                filename=submission.filename, sha256=submission.content_sha256,
+                uploaded_at=self._now(), conflict=conflict,
+                replace_doc_id=replace_doc_id,
+            )
             connection.execute("""
                 INSERT INTO ingestion_jobs (
                     job_id, doc_id, kb_id, filename, size_bytes, uploaded_by,
@@ -311,6 +325,7 @@ class PostgresIngestionJobRepository:
                     chunks_count=%s, updated_at=%s, lease_token=NULL,
                     lease_expires_at=NULL WHERE job_id=%s
             """, (chunks_count, now.isoformat(), claim.job.job_id))
+            publish_document(connection, claim.job.doc_id, now)
             return self._job(self._row(connection, claim.job.job_id))
 
     def fail(
@@ -336,6 +351,7 @@ class PostgresIngestionJobRepository:
                     updated_at=%s, lease_token=NULL, lease_expires_at=NULL
                 WHERE job_id=%s
             """, (code, now.isoformat(), claim.job.job_id))
+            fail_document(connection, claim.job.doc_id)
             return self._job(self._row(connection, claim.job.job_id))
 
     def unpublished_document_ids(self) -> tuple[UUID, ...]:

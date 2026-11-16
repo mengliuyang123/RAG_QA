@@ -10,6 +10,7 @@ from app.domain.ingestion_jobs import IngestionJobClaim
 from app.domain.ingestion_jobs import IngestionJobSubmission
 from app.domain.ingestion_jobs import IngestionStage
 from app.domain.ingestion_jobs import DocumentJobInfo
+from app.domain.documents import ConflictResolution
 
 
 class DocumentPublication(Protocol):
@@ -52,12 +53,16 @@ class IngestionJobRepository(DocumentPublication, DocumentJobReader, Protocol):
 
     def enqueue(
         self, submission: IngestionJobSubmission, *, capacity: int,
+        conflict: ConflictResolution | None = "keep_both",
+        replace_doc_id: UUID | None = None,
     ) -> IngestionJob:
-        """在同一事务核对知识库、身份及非终态队列容量。
+        """在同一事务核对知识库、身份、内容查重及非终态队列容量。
 
         Args:
             submission: 已持久保存源文件的服务端提交资料。
             capacity: queued和running合计上限。
+            conflict: 同名文档时的用户选择；None 表示需要先询问用户。
+            replace_doc_id: 替换时明确指定的旧文档。
 
         Returns:
             已持久入队的公开任务。

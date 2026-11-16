@@ -2,6 +2,7 @@ import type {
   Citation,
   Clarification,
   DataBlock,
+  ExistingDocument,
   Grounding,
   KbDocument,
   Lane,
@@ -236,6 +237,18 @@ export function normalizeDocument(raw: Raw): KbDocument {
     chunksCount: num(raw.chunks_count),
     updatedAt: strOrNull(raw.updated_at ?? raw.created_at),
     fileStatus: raw.file_status === "missing" ? "missing" : "available",
+    ...(raw.ingestion_status === "failed" ? { ingestionFailed: true } : {}),
+  };
+}
+
+export function normalizeExistingDocument(raw: Raw): ExistingDocument {
+  const status = raw.status === "pending" || raw.status === "failed" ? raw.status : "ready";
+  return {
+    docId: str(raw.doc_id),
+    kbId: str(raw.kb_id),
+    filename: str(raw.filename, "未知文件"),
+    status,
+    uploadedAt: str(raw.uploaded_at),
   };
 }
 

@@ -13,6 +13,8 @@ export interface MockDocument {
   updatedAt: string;
   fileStatus: "available" | "missing";
   chunks: MockChunk[];
+  /** 上传的原文，用于模拟后端的内容查重。 */
+  content?: string;
 }
 
 export const MOCK_KNOWLEDGE_BASES = [

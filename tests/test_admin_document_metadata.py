@@ -120,7 +120,7 @@ def test_document_job_metadata_is_batched_and_never_exposes_recovery_fields(
             repository.enqueue(IngestionJobSubmission(
                 job_id=f"job_{uuid4().hex}", doc_id=identifier, kb_id="default",
                 filename="guide.md", size_bytes=1, uploaded_by=uploader,
-                content_sha256="a" * 64,
+                content_sha256=uuid4().hex * 2,
             ), capacity=200)
         selects = []
         from tests.postgres_support import observe_queries

@@ -3,6 +3,7 @@
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -94,7 +95,7 @@ class DocumentSummary(BaseModel):
 
     doc_id: UUID
     filename: str = Field(min_length=1)
-    chunks_count: int = Field(ge=1)
+    chunks_count: int = Field(ge=0)
     created_at: datetime | None
     file_status: DocumentFileStatus
     kb_id: str | None = Field(default=None, pattern=KB_ID_PATTERN)
@@ -119,3 +120,47 @@ class DocumentDeleteResult(BaseModel):
 
     doc_id: UUID
     deleted: bool = True
+
+
+DocumentRecordStatus = Literal["pending", "ready", "failed"]
+ConflictResolution = Literal["replace", "keep_both"]
+
+
+class StoredDocument(BaseModel):
+    """documents 表中的一篇登记文档，查重与按 doc_id 删除都以它为准。
+
+    Attributes:
+        doc_id: 文档 UUID。
+        kb_id: 所属知识库。
+        filename: 已清理的安全文件名。
+        sha256: 原始内容摘要。
+        status: pending 入库中、ready 已发布、failed 入库失败。
+        uploaded_at: 登记时间。
+        deleted_at: 删除时间；未删除为 None。
+        replaces_doc_id: 作为新版本替换的旧文档。
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    doc_id: UUID
+    kb_id: str = Field(pattern=KB_ID_PATTERN)
+    filename: str = Field(min_length=1, max_length=255)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    status: DocumentRecordStatus
+    uploaded_at: AwareDatetime
+    deleted_at: AwareDatetime | None = None
+    replaces_doc_id: UUID | None = None
+
+
+class BatchDocumentDeleteResult(BaseModel):
+    """批量删除结果：成功删除与不存在的 doc_id 分开报告。
+
+    Attributes:
+        deleted: 已删除分块、登记与源文件的文档。
+        not_found: 既无登记、索引也无任务的文档。
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    deleted: tuple[UUID, ...]
+    not_found: tuple[UUID, ...]

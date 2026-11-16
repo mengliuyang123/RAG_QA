@@ -34,6 +34,35 @@ export interface KbDocument {
   chunksCount: number;
   updatedAt: string | null;
   fileStatus: "available" | "missing";
+  /** 入库失败（没有文本块）的文档仍会列出，便于删除。 */
+  ingestionFailed?: boolean;
+}
+
+/** 同名不同内容时用户的选择：作为新版本替换，或另存为一篇。 */
+export type UploadConflictChoice = "replace" | "keep_both";
+
+/** 后端 documents 登记中已有的文档。 */
+export interface ExistingDocument {
+  docId: string;
+  kbId: string;
+  filename: string;
+  status: "pending" | "ready" | "failed";
+  uploadedAt: string;
+}
+
+export interface UploadOptions {
+  onConflict?: UploadConflictChoice;
+  replaceDocId?: string;
+}
+
+/** uploaded：新文档入库完成；exists：内容完全相同的文档已存在，未重复入库。 */
+export type UploadResult =
+  | { kind: "uploaded"; document: KbDocument }
+  | { kind: "exists"; existing: ExistingDocument };
+
+export interface BatchDeleteResult {
+  deleted: string[];
+  notFound: string[];
 }
 
 export interface SuggestedQuestion {
@@ -265,8 +294,10 @@ export interface Api {
       kbId: string,
       file: File,
       onProgress: (progress: UploadProgress) => void,
-    ): Promise<KbDocument>;
+      options?: UploadOptions,
+    ): Promise<UploadResult>;
     deleteDocument(docId: string): Promise<void>;
+    deleteDocuments(docIds: string[]): Promise<BatchDeleteResult>;
     createKnowledgeBase(kb: { id: string; name: string; description: string }): Promise<void>;
     updateKnowledgeBase(kbId: string, description: string): Promise<void>;
     insights(): Promise<KbInsight[]>;

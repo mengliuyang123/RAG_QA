@@ -344,3 +344,32 @@ class QuestionQueueFullError(RuntimeError):
 
 class QuestionQueueTimeoutError(RuntimeError):
     """表示只消耗等待预算、未开始模型执行的请求已经超时。"""
+
+
+class DocumentConflictError(RuntimeError):
+    """上传与已登记文档冲突，携带已有文档供前端展示。"""
+
+    def __init__(self, message: str, existing: object) -> None:
+        """保存冲突的已有文档。
+
+        Args:
+            message: 固定中文说明。
+            existing: 已有的 StoredDocument。
+
+        Returns:
+            None。
+        """
+        super().__init__(message)
+        self.existing = existing
+
+
+class DocumentAlreadyExistsError(DocumentConflictError):
+    """同一知识库已有内容完全相同（sha256 相同）的文档。"""
+
+
+class DocumentNameConflictError(DocumentConflictError):
+    """同名但内容不同，需要用户选择替换或另存。"""
+
+
+class DocumentReplaceConflictError(RuntimeError):
+    """替换目标仍在入库或已有其他替换任务。"""

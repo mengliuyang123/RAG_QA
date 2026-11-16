@@ -182,20 +182,20 @@ async def test_confirmed_removed_document_is_gone_but_failed_delete_keeps_contex
     app, chunk, _ = _app(tmp_path, legacy_identity=False)
     root = app.state.container
     root.auth_service.create_user("member", PASSWORD, name="成员", role="member")
-    real_delete = root.ingestion_pipeline.delete_document
+    real_delete = root.document_registry.delete_documents
 
-    def failed(identifier: str) -> None:
+    def failed(targets: object) -> None:
         raise RuntimeError("PRIVATE_DELETE_FAILURE")
 
     try:
         async with _client(app) as client:
             path = f"/api/documents/{chunk.doc_id}/chunks/{chunk.id}"
             assert (await client.get(path)).status_code == 200
-            monkeypatch.setattr(root.ingestion_pipeline, "delete_document", failed)
+            monkeypatch.setattr(root.document_registry, "delete_documents", failed)
             with pytest.raises(RuntimeError):
                 root.document_service.delete_document(UUID(chunk.doc_id))
             assert (await client.get(path)).status_code == 200
-            monkeypatch.setattr(root.ingestion_pipeline, "delete_document", real_delete)
+            monkeypatch.setattr(root.document_registry, "delete_documents", real_delete)
             root.document_service.delete_document(UUID(chunk.doc_id))
             gone = await client.get(path)
             assert gone.status_code == 410
@@ -388,7 +388,8 @@ async def test_failed_deletion_record_prevents_index_mutation(
     def failed(doc_id: UUID, kb_id: str) -> None:
         raise KnowledgeContentError("PRIVATE_REGISTRY_ERROR")
 
-    monkeypatch.setattr(root.knowledge_read_registry, "record_deletion", failed)
+    # 删除事实与分块删除在同一事务写入；登记写入失败时整个事务不提交。
+    monkeypatch.setattr(root.document_registry, "delete_documents", lambda targets: failed(None, ""))
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             response = await client.delete(f"/api/documents/{chunk.doc_id}")

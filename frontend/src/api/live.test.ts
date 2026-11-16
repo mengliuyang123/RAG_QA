@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AUTH_EXPIRED_EVENT, createLiveApi } from "./live";
+import { UploadConflictError } from "./mock";
 
 type Call = { url: string; init: RequestInit };
 
@@ -86,7 +87,9 @@ describe("live api", () => {
       "ops", new File(["x"], "a.md"), (progress) => stages.push(progress.stage),
     );
     await vi.advanceTimersByTimeAsync(2500);
-    const doc = await upload;
+    const result = await upload;
+    expect(result.kind).toBe("uploaded");
+    const doc = result.kind === "uploaded" ? result.document : null;
     expect(calls[0].url).toBe("/api/admin/knowledge-bases/ops/documents");
     expect(header(calls[0], "X-CSRF-Token")).toBe("csrf-token-value");
     expect(calls[1].url).toBe("/api/admin/ingestion-jobs/job_1");
@@ -104,6 +107,68 @@ describe("live api", () => {
     const assertion = expect(upload).rejects.toMatchObject({ code: "empty_document", message: "文档中没有可提取的文本" });
     await vi.advanceTimersByTimeAsync(1500);
     await assertion;
+  });
+
+  it("returns the existing document when the same content is already uploaded", async () => {
+    const calls = mockFetch([
+      jsonResponse({
+        job_id: null, doc_id: "d9", status: "exists",
+        existing: { doc_id: "d9", kb_id: "ops", filename: "a.md", status: "ready", uploaded_at: "2026-11-01T00:00:00Z" },
+      }),
+    ]);
+    const result = await createLiveApi().admin.uploadDocument("ops", new File(["x"], "copy.md"), () => undefined);
+    expect(calls).toHaveLength(1);
+    expect(result).toEqual({
+      kind: "exists",
+      existing: { docId: "d9", kbId: "ops", filename: "a.md", status: "ready", uploadedAt: "2026-11-01T00:00:00Z" },
+    });
+  });
+
+  it("raises an UploadConflictError carrying the existing document on a name conflict", async () => {
+    mockFetch([
+      jsonResponse({
+        detail: "知识库中已有同名文档，请选择替换或另存为一篇",
+        error: {
+          code: "document_name_conflict", message: "知识库中已有同名文档，请选择替换或另存为一篇",
+          details: { existing: { doc_id: "d1", kb_id: "ops", filename: "a.md", status: "ready", uploaded_at: "2026-11-01T00:00:00Z" } },
+        },
+      }, 409),
+    ]);
+    const upload = createLiveApi().admin.uploadDocument("ops", new File(["new"], "a.md"), () => undefined);
+    await expect(upload).rejects.toBeInstanceOf(UploadConflictError);
+    await expect(upload).rejects.toMatchObject({ status: 409, code: "document_name_conflict", existing: { docId: "d1", filename: "a.md" } });
+  });
+
+  it("sends the conflict choice and replaced document with the upload form", async () => {
+    vi.useFakeTimers();
+    const calls = mockFetch([
+      jsonResponse({ job_id: "job_3", doc_id: "d3", status: "queued" }, 202),
+      jsonResponse({ job_id: "job_3", doc_id: "d3", kb_id: "ops", filename: "a.md", status: "succeeded", chunks_count: 2, updated_at: "2026-10-28T00:00:00Z" }),
+    ]);
+    const upload = createLiveApi().admin.uploadDocument(
+      "ops", new File(["new"], "a.md"), () => undefined, { onConflict: "replace", replaceDocId: "d1" },
+    );
+    await vi.advanceTimersByTimeAsync(1500);
+    await upload;
+    const form = calls[0].init.body as FormData;
+    expect(form.get("on_conflict")).toBe("replace");
+    expect(form.get("replace_doc_id")).toBe("d1");
+  });
+
+  it("deletes a batch of documents through one request", async () => {
+    const calls = mockFetch([jsonResponse({ deleted: ["d1"], not_found: ["d2"] })]);
+    const result = await createLiveApi().admin.deleteDocuments(["d1", "d2"]);
+    expect(calls[0].url).toBe("/api/documents/batch-delete");
+    expect(calls[0].init.method).toBe("POST");
+    expect(header(calls[0], "X-CSRF-Token")).toBe("csrf-token-value");
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ doc_ids: ["d1", "d2"] });
+    expect(result).toEqual({ deleted: ["d1"], notFound: ["d2"] });
+  });
+
+  it("marks failed documents without chunks so they can be deleted", async () => {
+    mockFetch([jsonResponse({ documents: [{ doc_id: "d5", filename: "bad.pdf", chunks_count: 0, file_status: "available", ingestion_status: "failed" }] })]);
+    const [doc] = await createLiveApi().admin.listDocuments("ops");
+    expect(doc).toMatchObject({ docId: "d5", chunksCount: 0, ingestionFailed: true });
   });
 
   it("keeps null insight rates instead of turning them into zero", async () => {

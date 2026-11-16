@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createMockApi, pickScenario } from "./mock";
+import { UploadConflictError, createMockApi, pickScenario } from "./mock";
 import type { StatusUpdate, Turn } from "./types";
 
 describe("pickScenario", () => {
@@ -58,5 +58,46 @@ describe("createMockApi streamQuery", () => {
     ).rejects.toMatchObject({ status: 409 });
     controller.abort();
     await expect(first).rejects.toMatchObject({ name: "AbortError" });
+  });
+});
+
+describe("createMockApi uploadDocument", () => {
+  const noop = () => undefined;
+
+  it("returns the existing document instead of ingesting identical content again", async () => {
+    const api = createMockApi();
+    const first = await api.admin.uploadDocument("ops", new File(["same body"], "a.md"), noop);
+    const before = (await api.admin.listDocuments("ops")).length;
+    const second = await api.admin.uploadDocument("ops", new File(["same body"], "renamed.md"), noop);
+    expect(first.kind).toBe("uploaded");
+    expect(second).toMatchObject({ kind: "exists", existing: { filename: "a.md" } });
+    expect((await api.admin.listDocuments("ops")).length).toBe(before);
+  }, 20000);
+
+  it("asks for a choice on a name conflict, then replaces or keeps both", async () => {
+    const api = createMockApi();
+    const original = await api.admin.uploadDocument("ops", new File(["v1"], "guide.md"), noop);
+    const originalId = original.kind === "uploaded" ? original.document.docId : "";
+    const conflict = api.admin.uploadDocument("ops", new File(["v2"], "guide.md"), noop);
+    await expect(conflict).rejects.toBeInstanceOf(UploadConflictError);
+    await expect(conflict).rejects.toMatchObject({ existing: { docId: originalId } });
+
+    await api.admin.uploadDocument("ops", new File(["v2"], "guide.md"), noop, { onConflict: "replace", replaceDocId: originalId });
+    let named = (await api.admin.listDocuments("ops")).filter((doc) => doc.filename === "guide.md");
+    expect(named).toHaveLength(1);
+    expect(named[0].docId).not.toBe(originalId);
+
+    await api.admin.uploadDocument("ops", new File(["v3"], "guide.md"), noop, { onConflict: "keep_both" });
+    named = (await api.admin.listDocuments("ops")).filter((doc) => doc.filename === "guide.md");
+    expect(named).toHaveLength(2);
+  }, 20000);
+
+  it("deletes documents in a batch and reports unknown ids", async () => {
+    const api = createMockApi();
+    const docs = await api.admin.listDocuments(null);
+    const ids = docs.slice(0, 2).map((doc) => doc.docId);
+    const result = await api.admin.deleteDocuments([...ids, "missing"]);
+    expect(result).toEqual({ deleted: ids, notFound: ["missing"] });
+    expect((await api.admin.listDocuments(null)).length).toBe(docs.length - 2);
   });
 });

@@ -35,6 +35,7 @@ from app.application.conversations.service import ConversationService
 from app.application.conversations.history_window import HistoryWindowBuilder
 from app.application.ingestion.pipeline import IngestionPipeline
 from app.application.ingestion.service import UploadService
+from app.infrastructure.persistence.documents import PostgresDocumentRegistry
 from app.application.ingestion.jobs import IngestionJobService
 from app.application.ingestion.job_pipeline import JobIngestionPipeline
 from app.application.ingestion.job_runner import IngestionJobRunner
@@ -231,6 +232,7 @@ class ApplicationContainer:
         ] = _LazySlot()
         self._ingestion_sources_slot: _LazySlot[IngestionSources] = _LazySlot()
         self._ingestion_job_service_slot: _LazySlot[IngestionJobService] = _LazySlot()
+        self._document_registry_slot: _LazySlot[PostgresDocumentRegistry] = _LazySlot()
         self._job_ingestion_pipeline_slot: _LazySlot[JobIngestionPipeline] = _LazySlot()
         self._ingestion_job_runner_slot: _LazySlot[IngestionJobRunner] = _LazySlot()
         self._ingestion_worker_slot: _LazySlot[IngestionWorker] = _LazySlot()
@@ -387,6 +389,18 @@ class ApplicationContainer:
         )
 
     @property
+    def document_registry(self) -> PostgresDocumentRegistry:
+        """documents 登记：上传查重、替换与按 doc_id 删除。
+
+        Returns:
+            共享同一业务数据库的登记仓储。
+        """
+        return self._get_or_create(
+            self._document_registry_slot,
+            lambda: PostgresDocumentRegistry(self.database), owned_adapter=False,
+        )
+
+    @property
     def ingestion_sources(self) -> IngestionSources:
         """惰性取得本运行时源文件仓储，不构造模型或索引。
 
@@ -435,6 +449,7 @@ class ApplicationContainer:
             lambda: self.job_ingestion_pipeline,
             lambda: self.ingestion_pipeline, guard,
             mutation_lock=self._document_mutation_lock,
+            on_published=lambda doc_id: self.document_service.remove_replaced_source(doc_id),
         )
 
     @property
@@ -1078,10 +1093,12 @@ class ApplicationContainer:
             mutation_lock=self._document_mutation_lock,
             deletion_registry=self.knowledge_read_registry,
             jobs=self.ingestion_job_repository,
+            registry=self.document_registry,
             listing=AdminDocumentListing(
                 self._job_sources_path(), self.vector_store,
                 self.ingestion_job_repository, self._document_mutation_lock,
                 statistics=lambda: self.citation_statistics,
+                registry=self.document_registry,
             ),
         )
 

@@ -7,6 +7,8 @@ from pathlib import PureWindowsPath
 from uuid import UUID
 from uuid import uuid4
 
+from app.application.errors import DocumentConflictError
+from app.application.errors import DocumentReplaceConflictError
 from app.application.errors import EmptyDocumentError
 from app.application.errors import FileTooLargeError
 from app.application.errors import IngestionJobConflictError
@@ -17,6 +19,7 @@ from app.application.ports.ingestion_jobs import IngestionJobRepository
 from app.application.ports.ingestion_sources import IngestionSources
 from app.application.ports.knowledge_bases import KnowledgeBaseRepository
 from app.application.ports.parsing import ParserResolver
+from app.domain.documents import ConflictResolution
 from app.domain.ingestion_jobs import IngestionJob
 from app.domain.ingestion_jobs import IngestionJobSubmission
 
@@ -53,7 +56,8 @@ class IngestionJobService:
 
     def submit(
         self, kb_id: str, filename: str | None, content: bytes,
-        uploaded_by: UUID,
+        uploaded_by: UUID, *, conflict: ConflictResolution | None = None,
+        replace_doc_id: UUID | None = None,
     ) -> IngestionJob:
         """验证元数据和类型，持久文件后提交queued，不调用模型。
 
@@ -62,9 +66,16 @@ class IngestionJobService:
             filename: 客户端文件名，可能带浏览器路径。
             content: 已受HTTP读取上限保护的字节。
             uploaded_by: 服务端认证身份，不能来自上传表单。
+            conflict: 同名不同内容时用户的选择；None 时冲突交给用户决定。
+            replace_doc_id: 选择替换时要替换的旧文档。
 
         Returns:
             已持久入队的公开任务。
+
+        Raises:
+            DocumentAlreadyExistsError: 同库已有相同内容，不再入库。
+            DocumentNameConflictError: 同名不同内容且未给出选择。
+            DocumentReplaceConflictError: 替换目标仍在入库。
         """
         self._catalog.get(kb_id)
         if not filename or not filename.strip():
@@ -88,10 +99,14 @@ class IngestionJobService:
             raise MissingFilenameError("上传文件名无效或过长") from error
         self._sources.persist(submission, content)
         try:
-            return self._jobs.enqueue(submission, capacity=self._capacity)
+            return self._jobs.enqueue(
+                submission, capacity=self._capacity, conflict=conflict,
+                replace_doc_id=replace_doc_id,
+            )
         except (
             IngestionQueueFullError, IngestionJobConflictError,
-            KnowledgeBaseNotFoundError,
+            KnowledgeBaseNotFoundError, DocumentConflictError,
+            DocumentReplaceConflictError,
         ):
             # 只有已确认回滚的拒绝才能删源文件；存储异常可能意味着提交响应丢失。
             self._sources.discard(submission)

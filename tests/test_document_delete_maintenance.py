@@ -9,6 +9,8 @@ from uuid import uuid4
 
 import httpx
 import pytest
+
+from app.application.errors import KnowledgeContentError
 import anyio
 
 from app.bootstrap.container import build_application_container
@@ -155,7 +157,7 @@ async def test_failed_partial_job_can_be_deleted_without_reviving_task(tmp_path:
 async def test_vector_delete_failure_restores_bm25_and_keeps_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """本地删除失败不能让BM25仍处于过滤后状态，也不能提前删除源文件。
+    """按 doc_id 删除分块的事务失败时，分块、全文索引和源文件都保持不变。
 
     Args:
         tmp_path: 真实临时源文件／索引。
@@ -177,17 +179,17 @@ async def test_vector_delete_failure_restores_bm25_and_keeps_source(
     source.write_bytes(b"source")
     assert root.keyword_index.search("needle", 5)[0].chunk_id == chunk.id
 
-    def fail(identifier: str) -> None:
-        raise VectorStoreError("private vector backend detail")
+    def fail(targets: object) -> None:
+        raise KnowledgeContentError("private vector backend detail")
 
-    monkeypatch.setattr(root.vector_store, "delete_document", fail)
+    monkeypatch.setattr(root.document_registry, "delete_documents", fail)
     app = allow_test_identity(create_app(settings=settings, container_factory=lambda settings: root))
     try:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test",
         ) as client:
             response = await client.delete(f"/api/documents/{doc_id}")
-            assert response.status_code == 502
+            assert response.status_code == 503
             assert "private" not in response.text
         assert source.read_bytes() == b"source"
         assert root.vector_store.list_chunks() == [chunk]

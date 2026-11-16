@@ -2,11 +2,12 @@ import {
   errorMessage,
   normalizeDataBlock,
   normalizeDocument,
+  normalizeExistingDocument,
   normalizeToolCall,
   normalizeStatus,
   normalizeTurn,
 } from "./adapters";
-import { ApiError } from "./mock";
+import { ApiError, UploadConflictError } from "./mock";
 import type {
   Api,
   Citation,
@@ -48,7 +49,16 @@ function errorCode(body: unknown): string | undefined {
 
 function toApiError(status: number, body: unknown): ApiError {
   if (status === 401) window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
-  return new ApiError(status, errorMessage(body, `请求失败（${status}）`), errorCode(body));
+  const message = errorMessage(body, `请求失败（${status}）`);
+  const code = errorCode(body);
+  if (status === 409 && code === "document_name_conflict") {
+    const details = ((body as Raw).error as Raw).details as Raw | undefined;
+    const existing = details?.existing;
+    if (existing && typeof existing === "object") {
+      return new UploadConflictError(message, normalizeExistingDocument(existing as Raw));
+    }
+  }
+  return new ApiError(status, message, code);
 }
 
 function writeHeaders(method: string): Record<string, string> {
@@ -319,14 +329,20 @@ export function createLiveApi(): Api {
         return body.documents.map(normalizeDocument);
       },
 
-      async uploadDocument(kbId, file, onProgress) {
+      async uploadDocument(kbId, file, onProgress, options = {}) {
         const form = new FormData();
         form.append("file", file);
+        if (options.onConflict) form.append("on_conflict", options.onConflict);
+        if (options.replaceDocId) form.append("replace_doc_id", options.replaceDocId);
         onProgress({ stage: "uploading", progress: null });
         const queued = await request<Raw>(
           `/api/admin/knowledge-bases/${encodeURIComponent(kbId)}/documents`,
           { method: "POST", body: form },
         );
+        // 内容完全相同：后端直接返回已有文档，不再入库。
+        if (queued.status === "exists" && queued.existing && typeof queued.existing === "object") {
+          return { kind: "exists", existing: normalizeExistingDocument(queued.existing as Raw) };
+        }
         const jobId = String(queued.job_id);
         // 入库在后端异步执行，轮询任务直到成功或失败。
         for (;;) {
@@ -338,14 +354,17 @@ export function createLiveApi(): Api {
           }
           if (job.status === "succeeded") {
             onProgress({ stage: "done", progress: 1 });
-            return normalizeDocument({
-              doc_id: job.doc_id,
-              kb_id: job.kb_id,
-              filename: job.filename,
-              chunks_count: job.chunks_count,
-              updated_at: job.updated_at,
-              file_status: "available",
-            });
+            return {
+              kind: "uploaded",
+              document: normalizeDocument({
+                doc_id: job.doc_id,
+                kb_id: job.kb_id,
+                filename: job.filename,
+                chunks_count: job.chunks_count,
+                updated_at: job.updated_at,
+                file_status: "available",
+              }),
+            };
           }
           const stage = job.status === "queued" ? "uploading" : job.stage;
           onProgress({
@@ -359,6 +378,14 @@ export function createLiveApi(): Api {
 
       async deleteDocument(docId) {
         await request(`/api/documents/${docId}`, { method: "DELETE" });
+      },
+
+      async deleteDocuments(docIds) {
+        const body = await request<{ deleted: unknown[]; not_found: unknown[] }>("/api/documents/batch-delete", {
+          method: "POST",
+          body: JSON.stringify({ doc_ids: docIds }),
+        });
+        return { deleted: body.deleted.map(String), notFound: body.not_found.map(String) };
       },
 
       async createKnowledgeBase(kb) {

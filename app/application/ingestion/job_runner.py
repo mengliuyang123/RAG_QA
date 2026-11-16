@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from threading import Event
 from threading import RLock
 from threading import Thread
+from uuid import UUID
 
 from app.application.errors import DocumentParsingError
 from app.application.errors import EmbeddingError
@@ -44,6 +45,7 @@ class IngestionJobRunner:
         execution_guard: IngestionExecutionGuard, *,
         lease_seconds: int = 60, heartbeat_seconds: float = 10,
         mutation_lock: AbstractContextManager[object] | None = None,
+        on_published: Callable[[UUID], None] | None = None,
     ) -> None:
         """注入持久化与惰性索引能力，不在构造时打开模型连接。
 
@@ -56,6 +58,7 @@ class IngestionJobRunner:
             lease_seconds: 每次认领的有效秒数。
             heartbeat_seconds: 小于租约的心跳间隔。
             mutation_lock: 与本进程旧上传／删除共用的变更锁。
+            on_published: 发布成功后的清理（如删除被替换旧版本的源文件）。
 
         Returns:
             None。
@@ -70,6 +73,7 @@ class IngestionJobRunner:
         self._lease_seconds = lease_seconds
         self._heartbeat_seconds = heartbeat_seconds
         self._mutation_lock = mutation_lock or RLock()
+        self._on_published = on_published
 
     def run_next(self, stop: Event) -> bool:
         """在完整排他区间内处理至多一个任务，普通失败只记录一次。
@@ -111,12 +115,22 @@ class IngestionJobRunner:
                             )
                             check()
                             self._jobs.succeed(claim, chunks_count=count)
+                            self._after_publish(claim.job.doc_id)
             except _Interrupted:
                 # 不伪报失败／成功，也不在关闭过程中重新开始下一批。
                 logger.info("入库任务等待恢复", extra={"job_id": claim.job.job_id})
             except Exception as error:
                 self._record_failure(claim, self._failure_code(error, stage))
             return True
+
+    def _after_publish(self, doc_id: UUID) -> None:
+        if self._on_published is None:
+            return
+        try:
+            self._on_published(doc_id)
+        except Exception:
+            # 发布已提交，旧版本源文件清理失败只记录，不把成功任务改成失败。
+            logger.warning("替换旧版本源文件清理未完成", extra={"doc_id": str(doc_id)})
 
     @contextmanager
     def _keep_lease(

@@ -148,6 +148,77 @@ def test_env_file_update_preserves_other_lines_and_round_trips(tmp_path: Path) -
     assert "OPENAI_API_KEY" not in values
 
 
+def test_env_file_round_trip_keeps_crlf_and_missing_final_newline(tmp_path: Path) -> None:
+    # Windows 上的 .env 常是 CRLF 且末尾无换行；只改目标行，其余字节保持不变。
+    path = tmp_path / ".env"
+    original = b"# note\r\nA=1\r\nLLM_MODEL=old\r\nB=2"
+    path.write_bytes(original)
+
+    EnvFile(path).update({"x_test": "1"})
+    EnvFile(path).update({"x_test": None})
+    assert path.read_bytes() == original
+
+    EnvFile(path).update({"llm_model": "new"})
+    assert path.read_bytes() == b"# note\r\nA=1\r\nLLM_MODEL=new\r\nB=2"
+
+
+def test_env_file_writes_in_place_when_mount_point_cannot_be_replaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Docker 单文件挂载：rename 到挂载点会 EBUSY，必须原地写入且不留临时文件。
+    import errno
+    import os
+
+    path = tmp_path / ".env"
+    path.write_text("# keep\nLLM_MODEL=old\n", encoding="utf-8")
+
+    def busy(*_args: object) -> None:
+        raise OSError(errno.EBUSY, "Device or resource busy")
+
+    monkeypatch.setattr(os, "replace", busy)
+    EnvFile(path).update({"llm_model": "new"})
+
+    assert path.read_text(encoding="utf-8") == "# keep\nLLM_MODEL=new\n"
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_env_file_writes_in_place_when_directory_is_not_writable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 非 root 容器用户不能在 /app 下创建临时文件，但能写挂载进来的 .env。
+    import tempfile
+
+    path = tmp_path / ".env"
+    path.write_text("LLM_MODEL=old\n", encoding="utf-8")
+
+    def denied(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(tempfile, "mkstemp", denied)
+    EnvFile(path).update({"llm_model": "new"})
+
+    assert path.read_text(encoding="utf-8") == "LLM_MODEL=new\n"
+
+
+def test_env_file_still_raises_unrelated_rename_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import errno
+    import os
+
+    path = tmp_path / ".env"
+    path.write_text("LLM_MODEL=old\n", encoding="utf-8")
+
+    def full(*_args: object) -> None:
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(os, "replace", full)
+    with pytest.raises(OSError):
+        EnvFile(path).update({"llm_model": "new"})
+    assert path.read_text(encoding="utf-8") == "LLM_MODEL=old\n"
+    assert list(tmp_path.iterdir()) == [path]
+
+
 def test_runtime_keeps_old_container_open_until_its_requests_finish() -> None:
     """正在进行的请求（例如流式回答）结束前，旧容器不能被关闭。"""
     state = type("State", (), {})()

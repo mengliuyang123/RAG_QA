@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """原地更新 .env 文件中的指定键，保留注释、顺序和其他配置。"""
 
+import errno
 import os
 import re
 import shutil
@@ -31,6 +32,10 @@ def _line_key(line: str) -> str | None:
     return match.group(1).upper() if match else None
 
 
+# rename 无法替换挂载点文件时的错误码。
+_UNREPLACEABLE_ERRNOS = frozenset({errno.EBUSY, errno.EXDEV})
+
+
 class EnvFile:
     """对 .env 做最小改动：只替换、追加或删除指定键所在的行。"""
 
@@ -59,8 +64,14 @@ class EnvFile:
             OSError: 读取或写入 .env 失败。
         """
         pending = {key.upper(): value for key, value in values.items()}
-        original = self.path.read_text(encoding="utf-8") if self.path.exists() else ""
+        original = ""
+        if self.path.exists():
+            # newline="" 保留原始行尾；read_text 会把 \r\n 转成 \n，导致 CRLF 文件被整体改写。
+            with open(self.path, encoding="utf-8", newline="") as handle:
+                original = handle.read()
         newline = "\r\n" if "\r\n" in original else "\n"
+        # 原文件末尾没有换行时保持原样，只改动目标行。
+        trailing = newline if not original or original.endswith(("\n", "\r")) else ""
         lines = original.splitlines()
 
         written: set[str] = set()
@@ -82,20 +93,39 @@ class EnvFile:
             if key not in written and value is not None:
                 result.append(f"{key}={format_env_value(value)}")
 
-        content = newline.join(result) + (newline if result else "")
+        content = newline.join(result) + (trailing if result else "")
         self._atomic_write(content)
 
     def _atomic_write(self, content: str) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, temporary = tempfile.mkstemp(
-            prefix=".env.", suffix=".tmp", dir=self.path.parent,
-        )
+        try:
+            descriptor, temporary = tempfile.mkstemp(
+                prefix=".env.", suffix=".tmp", dir=self.path.parent,
+            )
+        except PermissionError:
+            # 容器以非 root 运行时目录不可写，只能原地写入已挂载的文件。
+            self._write_in_place(content)
+            return
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
                 handle.write(content)
             if self.path.exists():
                 shutil.copymode(self.path, temporary)
             os.replace(temporary, self.path)
+        except OSError as exc:
+            Path(temporary).unlink(missing_ok=True)
+            # Docker 单文件挂载点不能被 rename 替换（EBUSY/EXDEV），退回原地写入。
+            if exc.errno not in _UNREPLACEABLE_ERRNOS or not self.path.exists():
+                raise
+            self._write_in_place(content)
         except BaseException:
             Path(temporary).unlink(missing_ok=True)
             raise
+
+    def _write_in_place(self, content: str) -> None:
+        # 非原子：先完整编码再一次写入，缩短文件处于截断状态的时间。
+        data = content.encode("utf-8")
+        with open(self.path, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
