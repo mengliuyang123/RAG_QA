@@ -9,8 +9,12 @@ from app.application.errors import AuthStorageError
 from app.application.errors import CSRFError
 from app.application.errors import ForbiddenError
 from app.application.errors import InvalidCredentialsError
+from app.application.errors import LastAdminError
 from app.application.errors import LoginRateLimitError
+from app.application.errors import SelfLockoutError
 from app.application.errors import UnauthenticatedError
+from app.application.errors import UserAlreadyExistsError
+from app.application.errors import UserNotFoundError
 
 
 async def _handle_auth_error(request: Request, error: Exception) -> JSONResponse:
@@ -39,6 +43,22 @@ async def _handle_auth_error(request: Request, error: Exception) -> JSONResponse
     )
 
 
+async def _handle_user_admin_error(request: Request, error: Exception) -> JSONResponse:
+    code, message, status = "user_not_found", "账号不存在", 404
+    if isinstance(error, UserAlreadyExistsError):
+        code, message, status = "user_exists", "登录名已被使用", 409
+    elif isinstance(error, LastAdminError):
+        code, message, status = "last_admin", "至少需要保留一名启用的管理员", 409
+    elif isinstance(error, SelfLockoutError):
+        code, message, status = "self_lockout", "不能降级或禁用自己的账号", 409
+    return JSONResponse(
+        status_code=status, headers={"Cache-Control": "no-store"},
+        content={"detail": message, "error": {
+            "code": code, "message": message, "details": {},
+        }},
+    )
+
+
 def register_auth_error_handlers(application: FastAPI) -> None:
     """注册认证错误处理器，存储故障不回退为匿名身份。
 
@@ -53,3 +73,5 @@ def register_auth_error_handlers(application: FastAPI) -> None:
         ForbiddenError, LoginRateLimitError, AuthStorageError,
     ):
         application.add_exception_handler(error, _handle_auth_error)
+    for error in (UserNotFoundError, UserAlreadyExistsError, LastAdminError, SelfLockoutError):
+        application.add_exception_handler(error, _handle_user_admin_error)

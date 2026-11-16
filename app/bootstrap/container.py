@@ -36,6 +36,8 @@ from app.application.conversations.history_window import HistoryWindowBuilder
 from app.application.ingestion.pipeline import IngestionPipeline
 from app.application.ingestion.service import UploadService
 from app.infrastructure.persistence.documents import PostgresDocumentRegistry
+from app.infrastructure.persistence.knowledge_gaps import PostgresKnowledgeGapRepository
+from app.application.knowledge_gaps import KnowledgeGapService
 from app.application.ingestion.jobs import IngestionJobService
 from app.application.ingestion.job_pipeline import JobIngestionPipeline
 from app.application.ingestion.job_runner import IngestionJobRunner
@@ -233,6 +235,7 @@ class ApplicationContainer:
         self._ingestion_sources_slot: _LazySlot[IngestionSources] = _LazySlot()
         self._ingestion_job_service_slot: _LazySlot[IngestionJobService] = _LazySlot()
         self._document_registry_slot: _LazySlot[PostgresDocumentRegistry] = _LazySlot()
+        self._knowledge_gap_service_slot: _LazySlot[KnowledgeGapService] = _LazySlot()
         self._job_ingestion_pipeline_slot: _LazySlot[JobIngestionPipeline] = _LazySlot()
         self._ingestion_job_runner_slot: _LazySlot[IngestionJobRunner] = _LazySlot()
         self._ingestion_worker_slot: _LazySlot[IngestionWorker] = _LazySlot()
@@ -386,6 +389,19 @@ class ApplicationContainer:
         self.knowledge_base_repository
         return self._factories.ingestion_job_repository(
             self.database,
+        )
+
+    @property
+    def knowledge_gap_service(self) -> KnowledgeGapService:
+        """知识缺口工作台的处理状态，共享业务数据库。
+
+        Returns:
+            缺口状态用例。
+        """
+        return self._get_or_create(
+            self._knowledge_gap_service_slot,
+            lambda: KnowledgeGapService(PostgresKnowledgeGapRepository(self.database)),
+            owned_adapter=False,
         )
 
     @property

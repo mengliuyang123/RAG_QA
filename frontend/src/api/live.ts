@@ -15,6 +15,12 @@ import type {
   KbInsight,
   KbScope,
   KnowledgeBase,
+  GapCandidate,
+  GapCheck,
+  GapCheckResult,
+  GapInput,
+  KnowledgeGap,
+  ManagedUser,
   ModelSettings,
   RefusalRecord,
   User,
@@ -428,6 +434,127 @@ export function createLiveApi(): Api {
         });
       },
 
+      async listUsers() {
+        const body = await request<{ users: Raw[] }>("/api/admin/users");
+        return body.users.map(toManagedUser);
+      },
+
+      async createUser(user) {
+        return toManagedUser(await request<Raw>("/api/admin/users", {
+          method: "POST",
+          body: JSON.stringify(user),
+        }));
+      },
+
+      async updateUser(userId, changes) {
+        return toManagedUser(await request<Raw>(`/api/admin/users/${encodeURIComponent(userId)}`, {
+          method: "PATCH",
+          body: JSON.stringify(changes),
+        }));
+      },
+
+      async resetPassword(userId, password) {
+        await request(`/api/admin/users/${encodeURIComponent(userId)}/password`, {
+          method: "POST",
+          body: JSON.stringify({ password }),
+        });
+      },
+
+      async gapCandidates() {
+        // 聚类会调用 Embedding（有内存缓存）；列表模式只用来补全样例问题原文。
+        const [clusters, refusals, feedback] = await Promise.allSettled([
+          request<{ clusters: Raw[] }>("/api/admin/insights/refusals?group=cluster&days=30&limit=50"),
+          request<{ refusals: Raw[] }>("/api/admin/insights/refusals?limit=100"),
+          request<{ feedback: Raw[] }>("/api/admin/insights/feedback?limit=50"),
+        ]);
+        const warnings: string[] = [];
+        const candidates: GapCandidate[] = [];
+        const questionByTurn = new Map<string, string>();
+        if (refusals.status === "fulfilled") {
+          for (const raw of refusals.value.refusals) questionByTurn.set(String(raw.turn_id), String(raw.question));
+        }
+        if (clusters.status === "fulfilled") {
+          for (const raw of clusters.value.clusters) {
+            const title = String(raw.representative_question);
+            const samples = (Array.isArray(raw.sample_turn_ids) ? raw.sample_turn_ids : [])
+              .map((id) => questionByTurn.get(String(id)))
+              .filter((text): text is string => !!text);
+            const kbIds = Array.isArray(raw.kb_ids) ? raw.kb_ids.map(String) : [];
+            candidates.push({
+              key: `cluster:${String(raw.cluster_id)}`,
+              source: "refusal_cluster",
+              title,
+              questions: [...new Set([title, ...samples])].slice(0, 10),
+              kbId: kbIds[0] ?? null,
+              count: Number(raw.count ?? 1),
+              lastAskedAt: typeof raw.last_asked_at === "string" ? raw.last_asked_at : null,
+            });
+          }
+        } else {
+          warnings.push(`拒答聚类加载失败：${(clusters.reason as Error).message}`);
+        }
+        if (feedback.status === "fulfilled") {
+          for (const raw of feedback.value.feedback) {
+            // 已判定"不是问题"的点踩不算知识缺口。
+            if (raw.triage === "not_an_issue") continue;
+            const citations = Array.isArray(raw.citations) ? (raw.citations as Raw[]) : [];
+            const kbId = citations.find((item) => typeof item.kb_id === "string")?.kb_id;
+            candidates.push({
+              key: `feedback:${String(raw.feedback_id)}`,
+              source: "feedback",
+              title: String(raw.question),
+              questions: [String(raw.question)],
+              kbId: typeof kbId === "string" ? kbId : null,
+              count: 1,
+              lastAskedAt: typeof raw.created_at === "string" ? raw.created_at : null,
+            });
+          }
+        } else {
+          warnings.push(`点踩反馈加载失败：${(feedback.reason as Error).message}`);
+        }
+        return { candidates, warnings };
+      },
+
+      async listGaps() {
+        const body = await request<{ gaps: Raw[] }>("/api/admin/gaps");
+        return body.gaps.map(toGap);
+      },
+
+      async saveGap(gap: GapInput) {
+        return toGap(await request<Raw>(`/api/admin/gaps/${encodeURIComponent(gap.key)}`, {
+          method: "PUT",
+          body: JSON.stringify({
+            source: gap.source,
+            title: gap.title,
+            questions: gap.questions,
+            kb_id: gap.kbId,
+            status: gap.status,
+            doc_id: gap.docId,
+            last_check: gap.lastCheck && {
+              checked_at: gap.lastCheck.checkedAt,
+              kb_id: gap.lastCheck.kbId,
+              results: gap.lastCheck.results,
+            },
+          }),
+        }));
+      },
+
+      async checkQuestion(question, kbId): Promise<GapCheckResult> {
+        try {
+          const raw = await request<Raw>("/api/query", {
+            method: "POST",
+            body: JSON.stringify({
+              question,
+              kb_scope: kbId ? { mode: "explicit", kb_ids: [kbId] } : { mode: "auto", kb_ids: [] },
+            }),
+          });
+          const turn = normalizeTurn(raw, { question });
+          return { question, outcome: turn.outcome, answered: turn.outcome === "answered" && turn.grounding !== "ungrounded" };
+        } catch {
+          return { question, outcome: "error", answered: false };
+        }
+      },
+
       async getModelSettings() {
         return toModelSettings(await request<Raw>("/api/admin/settings/models"));
       },
@@ -439,6 +566,48 @@ export function createLiveApi(): Api {
         }));
       },
     },
+  };
+}
+
+function toManagedUser(raw: Raw): ManagedUser {
+  return {
+    id: String(raw.id),
+    username: String(raw.username),
+    name: String(raw.name ?? raw.username),
+    role: raw.role === "admin" ? "admin" : "member",
+    disabled: raw.disabled === true,
+    createdAt: String(raw.created_at ?? ""),
+  };
+}
+
+function toGapCheck(raw: unknown): GapCheck | null {
+  if (!raw || typeof raw !== "object") return null;
+  const value = raw as Raw;
+  const results = Array.isArray(value.results) ? (value.results as Raw[]) : [];
+  return {
+    checkedAt: String(value.checked_at ?? ""),
+    kbId: typeof value.kb_id === "string" ? value.kb_id : null,
+    results: results.map((item) => ({
+      question: String(item.question),
+      outcome: item.outcome === "answered" || item.outcome === "refused" || item.outcome === "clarification"
+        ? item.outcome
+        : "error",
+      answered: item.answered === true,
+    })),
+  };
+}
+
+function toGap(raw: Raw): KnowledgeGap {
+  return {
+    key: String(raw.gap_key),
+    source: raw.source === "feedback" ? "feedback" : "refusal_cluster",
+    title: String(raw.title),
+    questions: Array.isArray(raw.questions) ? raw.questions.map(String) : [],
+    kbId: typeof raw.kb_id === "string" ? raw.kb_id : null,
+    status: raw.status === "document_added" || raw.status === "verified" ? raw.status : "open",
+    docId: typeof raw.doc_id === "string" ? raw.doc_id : null,
+    lastCheck: toGapCheck(raw.last_check),
+    updatedAt: typeof raw.updated_at === "string" ? raw.updated_at : null,
   };
 }
 

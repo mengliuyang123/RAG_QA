@@ -131,7 +131,7 @@ def test_factory_resolves_parser_through_resolver_port(tmp_path: Path) -> None:
 
 def test_factory_rejects_unsupported_extension(tmp_path: Path) -> None:
     with pytest.raises(UnsupportedFileTypeError):
-        ParserFactory.create(tmp_path / "a.docx")
+        ParserFactory.create(tmp_path / "a.doc")
 
 
 def test_factory_accepts_uppercase_pdf_extension(tmp_path: Path) -> None:

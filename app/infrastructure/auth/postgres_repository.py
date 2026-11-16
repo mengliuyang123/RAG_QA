@@ -12,12 +12,27 @@ from pathlib import Path
 from uuid import UUID
 
 from app.application.errors import AuthStorageError
+from app.application.errors import LastAdminError
 from app.application.errors import LoginRateLimitError
 from app.application.errors import UserAlreadyExistsError
+from app.application.errors import UserNotFoundError
 from app.domain.auth import AuthenticatedSession
 from app.domain.auth import StoredSession
 from app.domain.auth import User
 from app.domain.auth import UserAccount
+from app.domain.auth import UserRole
+
+
+_BUSINESS_LOCK = "SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || 'business_write', 0))"
+
+
+def _account(row: Record) -> UserAccount:
+    return UserAccount(
+        id=UUID(row["id"]), username=row["username"], name=row["name"],
+        password_hash=row["password_hash"], role=row["role"],
+        disabled=bool(row["disabled"]),
+        created_at=datetime.fromtimestamp(row["created_at"], UTC),
+    )
 
 
 
@@ -68,16 +83,112 @@ class PostgresAuthRepository:
                 row = connection.execute(
                     "SELECT * FROM users WHERE username = %s", (username,),
                 ).fetchone()
-            if row is None:
-                return None
-            return UserAccount(
-                id=UUID(row["id"]), username=row["username"], name=row["name"],
-                password_hash=row["password_hash"], role=row["role"],
-                disabled=bool(row["disabled"]),
-                created_at=datetime.fromtimestamp(row["created_at"], UTC),
-            )
+            return None if row is None else _account(row)
         except (psycopg.Error, ValueError) as exc:
             raise AuthStorageError("账号读取失败") from exc
+
+    def list_users(self) -> list[UserAccount]:
+        """按创建时间列出账号，供管理员页面使用。
+
+        Returns:
+            账号列表。
+        """
+        try:
+            with self._connect() as connection:
+                rows = connection.execute(
+                    "SELECT * FROM users ORDER BY created_at, username",
+                ).fetchall()
+            return [_account(row) for row in rows]
+        except (psycopg.Error, ValueError) as exc:
+            raise AuthStorageError("账号读取失败") from exc
+
+    def user_by_id(self, user_id: UUID) -> UserAccount | None:
+        """按标识读取账号。
+
+        Args:
+            user_id: 用户标识。
+
+        Returns:
+            账号或None。
+        """
+        try:
+            with self._connect() as connection:
+                row = connection.execute(
+                    "SELECT * FROM users WHERE id = %s", (str(user_id),),
+                ).fetchone()
+            return None if row is None else _account(row)
+        except (psycopg.Error, ValueError) as exc:
+            raise AuthStorageError("账号读取失败") from exc
+
+    def update_user(
+        self, user_id: UUID, *, role: UserRole | None, disabled: bool | None,
+    ) -> UserAccount:
+        """业务写锁内检查最后一名管理员，避免两个管理员并发互相降级。
+
+        Args:
+            user_id: 目标账号。
+            role: 新角色或None。
+            disabled: 新禁用状态或None。
+
+        Returns:
+            修改后的账号。
+        """
+        try:
+            with self._connect() as connection:
+                connection.execute(_BUSINESS_LOCK)
+                row = connection.execute(
+                    "SELECT * FROM users WHERE id = %s", (str(user_id),),
+                ).fetchone()
+                if row is None:
+                    raise UserNotFoundError("账号不存在")
+                current = _account(row)
+                new_role = current.role if role is None else role
+                new_disabled = current.disabled if disabled is None else disabled
+                was_admin = current.role == "admin" and not current.disabled
+                stays_admin = new_role == "admin" and not new_disabled
+                if was_admin and not stays_admin:
+                    others = connection.execute(
+                        "SELECT count(*) FROM users WHERE role = 'admin' AND disabled = 0 AND id <> %s",
+                        (str(user_id),),
+                    ).fetchone()[0]
+                    if others == 0:
+                        raise LastAdminError("至少需要保留一名启用的管理员")
+                connection.execute(
+                    "UPDATE users SET role = %s, disabled = %s WHERE id = %s",
+                    (new_role, int(new_disabled), str(user_id)),
+                )
+                if new_disabled and not current.disabled:
+                    connection.execute(
+                        "DELETE FROM auth_sessions WHERE user_id = %s", (str(user_id),),
+                    )
+            return current.model_copy(update={"role": new_role, "disabled": new_disabled})
+        except psycopg.Error as exc:
+            raise AuthStorageError("账号修改失败") from exc
+
+    def set_password(self, user_id: UUID, password_hash: str) -> None:
+        """替换口令并撤销该账号全部会话，旧口令登录的浏览器需要重新登录。
+
+        Args:
+            user_id: 目标账号。
+            password_hash: 新哈希。
+
+        Returns:
+            None。
+        """
+        try:
+            with self._connect() as connection:
+                connection.execute(_BUSINESS_LOCK)
+                updated = connection.execute(
+                    "UPDATE users SET password_hash = %s WHERE id = %s",
+                    (password_hash, str(user_id)),
+                ).rowcount
+                if updated == 0:
+                    raise UserNotFoundError("账号不存在")
+                connection.execute(
+                    "DELETE FROM auth_sessions WHERE user_id = %s", (str(user_id),),
+                )
+        except psycopg.Error as exc:
+            raise AuthStorageError("口令重置失败") from exc
 
     def save_session(self, session: StoredSession) -> None:
         """保存新令牌摘要，同时清理已绝对过期的认证令牌。
@@ -122,7 +233,7 @@ class PostgresAuthRepository:
         stamp = now.timestamp()
         try:
             with self._connect() as connection:
-                connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || 'business_write', 0))")
+                connection.execute(_BUSINESS_LOCK)
                 row = connection.execute(
                     """SELECT u.id, u.name, u.role, s.csrf_hash, s.expires_at
                     FROM auth_sessions s JOIN users u ON u.id = s.user_id
@@ -180,7 +291,7 @@ class PostgresAuthRepository:
         window = int(stamp // window_seconds) * window_seconds
         try:
             with self._connect() as connection:
-                connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || 'business_write', 0))")
+                connection.execute(_BUSINESS_LOCK)
                 connection.execute("DELETE FROM login_buckets WHERE window_start < %s", (window,))
                 for key in keys:
                     row = connection.execute(
@@ -204,5 +315,8 @@ class PostgresAuthRepository:
         try:
             with self._database.connection() as connection:
                 yield connection
+        except psycopg.IntegrityError:
+            # 唯一约束冲突由调用方映射为稳定业务错误（如登录名重复）。
+            raise
         except psycopg.Error as exc:
             raise AuthStorageError("PostgreSQL 仓储操作失败") from exc

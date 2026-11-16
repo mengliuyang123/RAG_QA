@@ -119,3 +119,41 @@ export const MOCK_REFUSALS = [
   { id: "r2", question: "灰度发布的流程是什么", kbIds: ["ops"], missing: ["灰度发布步骤与回滚条件"], askedAt: "2026-10-22T10:30:00Z" },
   { id: "r3", question: "企业版支持私有化部署吗", kbIds: ["product"], missing: ["企业版部署方式说明"], askedAt: "2026-10-21T02:15:00Z" },
 ];
+
+// 管理员账号管理的演示账号；u_demo 是 mock 模式下的当前管理员。
+export const MOCK_USERS = [
+  { id: "u_demo", username: "xiaoliu", name: "小刘", role: "admin" as const, disabled: false, createdAt: "2026-09-01T02:00:00Z" },
+  { id: "u_ops", username: "ops.wang", name: "王工", role: "member" as const, disabled: false, createdAt: "2026-09-12T03:30:00Z" },
+  { id: "u_old", username: "intern", name: "实习生", role: "member" as const, disabled: true, createdAt: "2026-10-02T08:00:00Z" },
+];
+
+// 知识缺口候选：结构与拒答聚类、点踩反馈接口转换后一致。
+export const MOCK_GAP_CANDIDATES = [
+  {
+    key: "cluster:cl_redis0000000000000000000",
+    source: "refusal_cluster" as const,
+    title: "Redis 缓存怎么配置",
+    questions: ["Redis 缓存怎么配置", "Redis 的过期时间在哪里设置", "缓存用 Redis 还是本地内存"],
+    kbId: "dev",
+    count: 6,
+    lastAskedAt: "2026-10-23T06:10:00Z",
+  },
+  {
+    key: "cluster:cl_canary000000000000000000",
+    source: "refusal_cluster" as const,
+    title: "灰度发布的流程是什么",
+    questions: ["灰度发布的流程是什么", "灰度失败怎么回滚"],
+    kbId: "ops",
+    count: 3,
+    lastAskedAt: "2026-10-22T10:30:00Z",
+  },
+  {
+    key: "feedback:7d7c3f1e-1111-4222-8333-944455556666",
+    source: "feedback" as const,
+    title: "企业版支持私有化部署吗",
+    questions: ["企业版支持私有化部署吗"],
+    kbId: "product",
+    count: 1,
+    lastAskedAt: "2026-10-21T02:15:00Z",
+  },
+];

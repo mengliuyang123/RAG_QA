@@ -101,3 +101,30 @@ describe("createMockApi uploadDocument", () => {
     expect((await api.admin.listDocuments(null)).length).toBe(docs.length - 2);
   });
 });
+
+describe("mock user management rules", () => {
+  it("rejects self lockout and removing the last enabled admin, like the backend", async () => {
+    const api = createMockApi();
+    await expect(api.admin.updateUser("u_demo", { disabled: true })).rejects.toMatchObject({ code: "self_lockout" });
+    await expect(api.admin.updateUser("u_demo", { role: "member" })).rejects.toMatchObject({ code: "self_lockout" });
+    await api.admin.updateUser("u_ops", { role: "admin" });
+    await expect(api.admin.updateUser("u_ops", { role: "member" })).resolves.toMatchObject({ role: "member" });
+    await expect(api.admin.createUser({ username: "OPS.WANG", name: "x", password: "replace-me-demo-passphrase", role: "member" }))
+      .rejects.toMatchObject({ code: "user_exists" });
+    await expect(api.admin.resetPassword("u_ops", "short")).rejects.toMatchObject({ status: 422 });
+    const users = await api.admin.listUsers();
+    expect(users.every((user) => !("password" in user))).toBe(true);
+  });
+
+  it("only accepts a verified gap with a fully answered re-check", async () => {
+    const api = createMockApi();
+    const gap = {
+      key: "cluster:x", source: "refusal_cluster" as const, title: "q", questions: ["q"],
+      kbId: "dev", status: "verified" as const, docId: null, lastCheck: null,
+    };
+    await expect(api.admin.saveGap(gap)).rejects.toMatchObject({ code: "gap_not_verified" });
+    const lastCheck = { checkedAt: "2026-11-17T00:00:00Z", kbId: "dev", results: [{ question: "q", outcome: "answered" as const, answered: true }] };
+    await expect(api.admin.saveGap({ ...gap, lastCheck })).resolves.toMatchObject({ status: "verified" });
+    expect(await api.admin.listGaps()).toHaveLength(1);
+  });
+});

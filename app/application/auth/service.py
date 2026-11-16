@@ -8,15 +8,19 @@ from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
 from threading import BoundedSemaphore
+from uuid import UUID
 from uuid import uuid4
 
 from app.application.errors import InvalidCredentialsError
 from app.application.errors import LoginRateLimitError
+from app.application.errors import SelfLockoutError
+from app.application.errors import UserNotFoundError
 from app.application.errors import UnauthenticatedError
 from app.application.ports.auth import AuthRepository
 from app.application.ports.auth import PasswordHasher
 from app.domain.auth import AuthenticatedSession
 from app.domain.auth import LoginResult
+from app.domain.auth import ManagedUser
 from app.domain.auth import StoredSession
 from app.domain.auth import User
 from app.domain.auth import UserAccount
@@ -37,6 +41,11 @@ def token_digest(token: str) -> str:
         SHA256摘要。
     """
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _check_password(password: str) -> None:
+    if not 15 <= len(password) <= 128:
+        raise ValueError("口令长度必须为15–128字符")
 
 
 class AuthService:
@@ -90,15 +99,81 @@ class AuthService:
         Returns:
             不含密码信息的公开身份。
         """
-        if not 15 <= len(password) <= 128:
-            raise ValueError("口令长度必须为15–128字符")
+        return self._create_account(username, password, name=name, role=role).public()
+
+    def _create_account(
+        self, username: str, password: str, *, name: str, role: UserRole,
+    ) -> UserAccount:
+        _check_password(password)
         account = UserAccount(
             id=uuid4(), username=username.strip().casefold(),
             name=name.strip(), role=role, password_hash=self._passwords.hash(password),
             created_at=self._clock(),
         )
         self._repository.create_user(account)
-        return account.public()
+        return account
+
+    # 管理员账号管理。会话规则：
+    # - 禁用：同一事务删除该账号全部会话；认证时也只接受未禁用账号，重新启用不会恢复旧会话。
+    # - 重置口令：同一事务删除该账号全部会话，所有浏览器（包括管理员重置自己时的当前浏览器）都需重新登录。
+    # - 修改角色：保留会话；每次请求都从数据库读取角色，降级在下一个请求立即生效。
+    def list_users(self) -> list[ManagedUser]:
+        """列出不含口令信息的账号。
+
+        Returns:
+            管理视图列表。
+        """
+        return [account.managed() for account in self._repository.list_users()]
+
+    def admin_create_user(
+        self, username: str, password: str, *, name: str, role: UserRole,
+    ) -> ManagedUser:
+        """管理员在后台创建账号，规则与命令行创建一致。
+
+        Args:
+            username: 登录标识。
+            password: 15–128字符原始口令。
+            name: 展示名。
+            role: 角色。
+
+        Returns:
+            管理视图。
+        """
+        return self._create_account(username, password, name=name, role=role).managed()
+
+    def update_user(
+        self, actor_id: UUID, user_id: UUID, *,
+        role: UserRole | None = None, disabled: bool | None = None,
+    ) -> ManagedUser:
+        """修改角色或禁用状态；不能降级或禁用自己，也不能移除最后一名启用的管理员。
+
+        Args:
+            actor_id: 当前管理员。
+            user_id: 目标账号。
+            role: 新角色。
+            disabled: 新禁用状态。
+
+        Returns:
+            修改后的管理视图。
+        """
+        if actor_id == user_id and (role == "member" or disabled is True):
+            raise SelfLockoutError("不能降级或禁用自己的账号")
+        return self._repository.update_user(user_id, role=role, disabled=disabled).managed()
+
+    def reset_password(self, user_id: UUID, password: str) -> None:
+        """替换口令并撤销该账号全部会话。
+
+        Args:
+            user_id: 目标账号。
+            password: 新的原始口令。
+
+        Returns:
+            None。
+        """
+        _check_password(password)
+        if self._repository.user_by_id(user_id) is None:
+            raise UserNotFoundError("账号不存在")
+        self._repository.set_password(user_id, self._passwords.hash(password))
 
     def login(
         self, username: str, password: str, *, client_id: str,

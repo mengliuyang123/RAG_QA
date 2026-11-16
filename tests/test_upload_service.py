@@ -82,7 +82,7 @@ def test_upload_service_rejects_unsupported_extension(
 ) -> None:
     """不支持的格式应在落盘前被拒绝。"""
     with pytest.raises(UnsupportedFileTypeError):
-        service.save_and_parse("notes.docx", b"content")
+        service.save_and_parse("notes.doc", b"content")
 
 
 def test_upload_service_removes_file_when_parsing_fails(

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { UploadConflictError } from "../api/mock";
 import type {
@@ -14,7 +15,7 @@ import { Topbar } from "../components/Layout";
 import { useApp } from "../state/AppContext";
 import { formatDate } from "./KnowledgePage";
 
-const ACCEPTED = ".pdf,.md,.markdown,.txt";
+const ACCEPTED = ".pdf,.md,.markdown,.txt,.docx,.pptx";
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 
 const STAGE_LABELS: Record<UploadProgress["stage"], string> = {
@@ -124,9 +125,20 @@ function NewKnowledgeBaseForm({ onCreated, onCancel }: { onCreated(id: string): 
   );
 }
 
+// 从知识缺口工作台跳转来时（?kb=…&gap=…），上传成功后把该缺口标记为已补充文档。
+async function markGapDocumentAdded(gapKey: string, kbId: string, docId: string): Promise<boolean> {
+  const gap = (await api.admin.listGaps()).find((item) => item.key === gapKey);
+  if (!gap) return false;
+  const { updatedAt: _updatedAt, ...input } = gap;
+  await api.admin.saveGap({ ...input, kbId, docId, status: "document_added" });
+  return true;
+}
+
 export function AdminKbPage() {
   const { knowledgeBases, refreshKnowledgeBases } = useApp();
-  const [selected, setSelected] = useState<string | null>(null);
+  const [searchParams] = useSearchParams();
+  const gapKey = searchParams.get("gap");
+  const [selected, setSelected] = useState<string | null>(() => searchParams.get("kb"));
   const [insights, setInsights] = useState<KbInsight[]>([]);
   const [documents, setDocuments] = useState<KbDocument[] | null>(null);
   const [uploads, setUploads] = useState<UploadRow[]>([]);
@@ -251,10 +263,19 @@ export function AdminKbPage() {
           });
         }
         dropRow();
+        let gapNote = "";
+        if (gapKey) {
+          const docId = result.kind === "exists" ? result.existing.docId : result.document.docId;
+          try {
+            if (await markGapDocumentAdded(gapKey, kbId, docId)) gapNote = "；知识缺口已标记为已补充文档，可回到缺口工作台复测";
+          } catch (gapError) {
+            gapNote = `；标记知识缺口失败：${(gapError as Error).message}`;
+          }
+        }
         if (result.kind === "exists") {
-          setMessage({ kind: "ok", text: `“${file.name}”已存在（与“${result.existing.filename}”内容相同），未重复入库` });
+          setMessage({ kind: "ok", text: `“${file.name}”已存在（与“${result.existing.filename}”内容相同），未重复入库${gapNote}` });
         } else {
-          setMessage({ kind: "ok", text: replaced ? `已用新版本替换 ${file.name}` : `已上传 ${file.name}` });
+          setMessage({ kind: "ok", text: `${replaced ? `已用新版本替换 ${file.name}` : `已上传 ${file.name}`}${gapNote}` });
           await Promise.all([loadDocuments(), refreshKnowledgeBases()]);
         }
       } catch (error) {
@@ -309,6 +330,12 @@ export function AdminKbPage() {
                 void refreshKnowledgeBases();
               }}
             />
+          )}
+          {gapKey && (
+            <div className="banner" role="note" style={{ marginBottom: 12 }}>
+              正在为知识缺口补充文档：上传成功后会自动标记为“已补文档”。{" "}
+              <Link to="/admin/gaps">返回缺口工作台</Link>
+            </div>
           )}
           {!api.supports.insights && (
             <div className="banner" style={{ marginBottom: 12 }}>
@@ -490,7 +517,7 @@ export function AdminKbPage() {
                 </table>
               </div>
               {documents && documents.length === 0 && uploads.length === 0 && (
-                <div className="empty">还没有文档，点击"上传文档"添加 PDF、Markdown 或 TXT 文件</div>
+                <div className="empty">还没有文档，点击"上传文档"添加 PDF、Word（.docx）、PPT（.pptx）、Markdown 或 TXT 文件</div>
               )}
               {!documents && <div className="muted" style={{ padding: 12 }}>正在加载…</div>}
             </section>

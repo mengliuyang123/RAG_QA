@@ -7,6 +7,8 @@ from app.application.errors import UnsupportedFileTypeError
 from app.application.ports.parsing import DocumentParser
 from app.infrastructure.parsing.base import BaseParser
 from app.infrastructure.parsing.markdown import MarkdownParser
+from app.infrastructure.parsing.office import DocxParser
+from app.infrastructure.parsing.office import PptxParser
 from app.infrastructure.parsing.pdf import PDFParser
 from app.infrastructure.parsing.text import TextParser
 
@@ -19,6 +21,8 @@ class ParserFactory:
         ".md": MarkdownParser,
         ".markdown": MarkdownParser,
         ".txt": TextParser,
+        ".docx": DocxParser,
+        ".pptx": PptxParser,
     }
 
     @classmethod

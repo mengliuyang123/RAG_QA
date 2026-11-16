@@ -99,7 +99,7 @@ uv run python -m app.interfaces.cli.users create --username admin --name 管理�
 
 ## 6. 导入知识
 
-登录后，在知识库页面创建知识库并上传文本、Markdown 或 PDF 文件。系统会执行解析、分块、Embedding 和索引构建，然后即可在聊天页面提问。
+登录后，在知识库页面创建知识库并上传文本、Markdown、PDF、Word（.docx）或 PowerPoint（.pptx）文件（旧版 .doc/.ppt 需先另存为新格式）。系统会执行解析、分块、Embedding 和索引构建，然后即可在聊天页面提问。
 
 ## 7. 使用演示模式
 
