@@ -154,3 +154,60 @@ def test_overlap_is_reproducible_for_text_without_separators() -> None:
     )
 
     assert [chunk.text for chunk in chunks] == ["abcdefghij", "hijklmnop"]
+
+
+def _texts(text: str, chunk_size: int = 200, overlap: int = 20) -> list[str]:
+    chunker = RecursiveDocumentChunker(chunk_size=chunk_size, chunk_overlap=overlap)
+    segment = DocumentSegment(text=text, page=None, filename="guide.md")
+    return [chunk.text for chunk in chunker.split("doc-1", [segment])]
+
+
+def test_short_code_block_stays_whole() -> None:
+    """代码里的逗号、句号、空格不能被当作分隔符切开。"""
+    code = "```python\ndef connect(host, port):\n    return pool.get(host, port, timeout=3.0)\n```"
+    texts = _texts(f"连接数据库：\n\n{code}\n\n完成后检查日志。", chunk_size=120)
+
+    assert code in texts
+    assert all(text.count("```") in (0, 2) for text in texts)
+
+
+def test_long_code_block_splits_on_lines_and_keeps_fences() -> None:
+    """超长代码按行切分，每块都带原语言围栏，且不切断任何一行。"""
+    functions = [
+        f"def handler_{i}(event, context):\n    value = compute(event, {i})\n    return value"
+        for i in range(8)
+    ]
+    body = "\n\n".join(functions)
+    texts = _texts(f"```python\n{body}\n```", chunk_size=160)
+
+    assert len(texts) > 1
+    original_lines = set(body.split("\n"))
+    for text in texts:
+        lines = text.split("\n")
+        assert lines[0] == "```python" and lines[-1] == "```"
+        assert len(text) <= 160
+        assert set(lines[1:-1]) <= original_lines
+    # 在空行处切：每个函数都完整落在某一块里。
+    for function in functions:
+        assert any(function in text for text in texts)
+
+
+def test_overlong_single_line_is_hard_split_within_limit() -> None:
+    line = "x = '" + "a" * 400 + "'"
+    texts = _texts(f"~~~\n{line}\n~~~", chunk_size=100)
+
+    assert len(texts) > 1
+    assert all(len(text) <= 100 and text.startswith("~~~\n") and text.endswith("\n~~~") for text in texts)
+    assert "".join(text[4:-4] for text in texts) == line
+
+
+def test_unclosed_fence_treats_rest_as_code() -> None:
+    texts = _texts("说明\n```bash\nexport A=1, B=2. C=3\n", chunk_size=200)
+
+    assert texts == ["说明", "```bash\nexport A=1, B=2. C=3\n```"]
+
+
+def test_inline_backticks_are_not_fences() -> None:
+    text = "用 ```code``` 表示行内代码，后面是普通段落。"
+
+    assert _texts(text) == [text]
