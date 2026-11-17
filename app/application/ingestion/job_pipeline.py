@@ -24,6 +24,7 @@ from app.application.ports.parsing import ParserResolver
 from app.application.ports.vector_store import VectorStoreWriter
 from app.domain.documents import DocumentChunk
 from app.domain.documents import DocumentSegment
+from app.domain.documents import index_text
 from app.domain.ingestion_jobs import IngestionJobSubmission
 from app.domain.ingestion_jobs import IngestionProgress
 
@@ -196,7 +197,7 @@ class JobIngestionPipeline:
     ) -> None:
         check()
         embeddings = self._embedder.embed_documents(
-            [chunk.text for chunk in batch],
+            [index_text(chunk) for chunk in batch],
         )
         with self._mutation_lock:
             check()

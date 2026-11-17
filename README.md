@@ -377,9 +377,11 @@ UNDERSTANDING_MODEL=your-small-model
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `KNOWLEDGE_RETRIEVAL_PROFILE` | `auto` | 检索策略：`auto` / `vector` / `hybrid` / `hybrid_rerank` |
-| `TOP_K` | `5` | 每次检索最终交给模型的段落数（1–20） |
-| `TOP_K_RERANK` | `20` | 进入重排的候选段落数 |
-| `CHUNK_SIZE` / `CHUNK_OVERLAP` | `500` / `50` | 分块长度与重叠 |
+| `TOP_K` | `5` | 每次检索最终交给模型的证据条数（按父块计，1–20） |
+| `TOP_K_RERANK` | `20` | 进入重排的候选子块数 |
+| `CHUNK_SIZE` | `500` | 子块（检索单位）字数上限；同一父块内的子块不重叠 |
+| `PARENT_CHUNK_SIZE` | `1500` | 父块（交给模型的上下文单位）字数上限，不跨章节、不跨页；设成与 `CHUNK_SIZE` 相同即关闭父块扩展 |
+| `CHUNK_OVERLAP` | `50` | 同一章节内相邻父块之间的重叠字数 |
 | `MAX_UPLOAD_SIZE` | `20971520` | 单个上传文件上限（字节，默认 20 MB） |
 | `AGENT_MAX_RETRIEVAL_CALLS` | `3` | Agent 通道单轮最多检索次数 |
 | `AGENT_TURN_TIMEOUT_SECONDS` | `180` | 单轮问答总时限 |
@@ -401,6 +403,22 @@ TRACE_MODEL_PRICES='[{"origin":"https://api.openai.com","model":"gpt-4o-mini","v
 ```
 
 请以服务商的最新价格为准。未配置费率的模型只统计 Token，不计金额。
+
+### 升级到父子分块
+
+文档现在按章节切成父块（交给模型的上下文）和子块（检索单位），子块带“文件名 › 标题路径”前缀建索引。升级后新上传的文档自动使用新规则；之前入库的文档照常可查，但没有标题和父块上下文，需要用命令行重建一次：
+
+```bash
+# 1. 试运行：列出待重建的文档，不读源文件、不调用模型、不写入
+uv run python -m app.interfaces.cli.reindex --dry-run
+
+# 2. 按知识库分批执行；--limit 限制本次处理的篇数
+uv run python -m app.interfaces.cli.reindex --kb default --limit 20
+```
+
+- 默认只处理还是旧格式的文档，重复执行会接着处理剩下的；加 `--all` 会把已是新格式的文档也重建一遍（例如调整了 `CHUNK_SIZE` / `PARENT_CHUNK_SIZE` 之后）。
+- 重建用的是 `data/docs` 里保存的源文件，会重新调用 Embedding 服务并产生相应费用。每篇文档先在内存里完成解析和向量化，再一次性替换文本块，替换之前旧版本照常可查；源文件缺失、向量化失败或期间文档被删除时，这篇文档保持原样并在输出中注明。
+- 重建不经过入库队列，管理页上看不到进度，进度和结果以命令行输出为准。
 
 ---
 

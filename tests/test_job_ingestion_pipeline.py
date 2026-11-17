@@ -121,7 +121,10 @@ def test_staged_pipeline_reports_real_batches_and_publishes_only_indexes(tmp_pat
         ("indexing", 0, 0, 5),
     ]
     assert [len(batch) for batch in embedder.batches] == [2, 2, 1]
+    # 向量化使用“文件名前缀 + 子块正文”，文件名是提交时的原始名称。
+    assert embedder.batches[0][0] == "original.txt\nabcdefghij"
     chunks = store.list_chunks()
+    assert chunks[0].text == "abcdefghij"
     assert {chunk.filename for chunk in chunks} == {"original.txt"}
     assert {chunk.doc_id for chunk in chunks} == {str(claim.job.doc_id)}
     assert {chunk.kb_id for chunk in chunks} == {"default"}

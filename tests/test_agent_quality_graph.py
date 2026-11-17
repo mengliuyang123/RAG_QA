@@ -793,3 +793,23 @@ def test_quality_error_never_saves_a_successful_turn(
             service.query(conversation.id, "A 存储")
     assert repository.get(conversation.id).turns_count == 0
     assert repository.get(conversation.id).turns == []
+
+
+def test_agent_tool_output_and_evidence_carry_parent_context() -> None:
+    """Agent 工具结果给模型看父块上下文；证据经检查点序列化后仍保留上下文，引用仍是命中块。"""
+    context = "文件名：1.md\n章节：存储\n页码：无\n内容：\n背景。A SQLite。补充"
+    model = _Model([
+        AIMessage(content="", tool_calls=[_call("A")]),
+        AIMessage(content="A 用 SQLite[1]"),
+    ])
+    hit = _chunk(1, "A SQLite").model_copy(update={"context": context})
+    evaluator = _Evaluator([_enough([1])], [_passed()])
+
+    result = _agent(model, _Retriever({"A": [hit]}), evaluator).run(uuid4(), "A 用什么？", [])
+
+    tool_payload = json.loads(next(
+        item["content"] for item in model.messages[1] if item.get("role") == "tool"
+    ))
+    assert tool_payload[0]["text"] == context
+    assert [item.context for item in evaluator.cited[0]] == [context]
+    assert [c.chunk_text for c in result.citations] == ["A SQLite"]

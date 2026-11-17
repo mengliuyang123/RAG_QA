@@ -71,7 +71,10 @@ def test_root_executes_job_in_requested_kb_and_keeps_legacy_file_management(tmp_
         assert result.chunks_count == 5
         chunks = root.vector_store.list_chunks()
         assert {chunk.kb_id for chunk in chunks} == {"ops"}
-        assert len(root.retrieval_service.retrieve("abcdefghij", "hybrid", 5, kb_ids=("ops",))) == 5
+        # 5 个子块同属一个父块：按父块合并为 1 条证据，上下文包含全部子块。
+        [hit] = root.retrieval_service.retrieve("abcdefghij", "hybrid", 5, kb_ids=("ops",))
+        assert {chunk.parent_index for chunk in chunks} == {0}
+        assert hit.context is not None and hit.context.count("abcdefghij") == 5
         assert root.retrieval_service.retrieve("abcdefghij", "hybrid", 5, kb_ids=("default",)) == []
         summary = root.document_service.list_documents()
         assert len(summary) == 1

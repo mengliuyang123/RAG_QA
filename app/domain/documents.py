@@ -20,11 +20,13 @@ class DocumentSegment(BaseModel):
         text: 源文本内容。
         page: 来源页码；非分页文档为 ``None``。
         filename: 来源文件名。
+        heading_path: 从最外层到最内层的所属标题；无结构标记时为空。
     """
 
     text: str
     page: int | None
     filename: str
+    heading_path: tuple[str, ...] = ()
 
 
 class DocumentChunk(BaseModel):
@@ -39,6 +41,8 @@ class DocumentChunk(BaseModel):
         chunk_index: 文本块在来源文档中的零基序号。
         kb_id: 来源知识库；旧语料默认归入default。
         doc_updated_at: 已明确记录的文档版本时间，旧索引未知时为None。
+        parent_index: 所属父块在文档内的零基序号；旧格式块为None。
+        heading_path: 所属章节的标题路径；旧格式块或无结构文档为空。
     """
 
     id: str
@@ -49,6 +53,31 @@ class DocumentChunk(BaseModel):
     chunk_index: int = Field(ge=0)
     kb_id: str = Field(default=DEFAULT_KB_ID, pattern=KB_ID_PATTERN)
     doc_updated_at: AwareDatetime | None = None
+    parent_index: int | None = Field(default=None, ge=0)
+    heading_path: tuple[str, ...] = ()
+
+
+INDEX_PATH_SEPARATOR = " › "
+
+
+def index_text(chunk: DocumentChunk) -> str:
+    """返回向量化、关键词索引和重排使用的文本：结构前缀加子块正文。
+
+    展示和引用始终使用 ``chunk.text``，不得包含该前缀。
+
+    Args:
+        chunk: 待索引的文本块。
+
+    Returns:
+        ``文件名 › 标题1 › 标题2`` 一行前缀，换行后接正文。
+    """
+    return index_prefix(chunk.filename, chunk.heading_path) + "\n" + chunk.text
+
+
+def index_prefix(filename: str, heading_path: tuple[str, ...]) -> str:
+    """把文件名和标题路径拼成单行结构前缀，空白标题被忽略。"""
+    parts = [filename, *(" ".join(h.split()) for h in heading_path)]
+    return INDEX_PATH_SEPARATOR.join(part for part in parts if part)
 
 
 class UploadResult(BaseModel):
@@ -164,3 +193,29 @@ class BatchDocumentDeleteResult(BaseModel):
 
     deleted: tuple[UUID, ...]
     not_found: tuple[UUID, ...]
+
+
+class ReindexCandidate(BaseModel):
+    """一篇可以按新分块规则原地重建的已发布文档。
+
+    Attributes:
+        doc_id: 文档身份，重建后保持不变。
+        kb_id: 所属知识库。
+        filename: 来源文件名。
+        sha256: 已发布内容的摘要；重建提交时必须仍然一致。
+        size_bytes: 源文件字节数，用于校验源文件。
+        uploaded_by: 原始上传者。
+        job_id: 原始入库任务，用于定位受控源文件。
+        legacy_chunks: 是否仍有旧格式块（没有父块序号）。
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    doc_id: UUID
+    kb_id: str = Field(pattern=KB_ID_PATTERN)
+    filename: str = Field(min_length=1)
+    sha256: str = Field(min_length=64, max_length=64)
+    size_bytes: int = Field(gt=0)
+    uploaded_by: UUID
+    job_id: str = Field(min_length=1)
+    legacy_chunks: bool

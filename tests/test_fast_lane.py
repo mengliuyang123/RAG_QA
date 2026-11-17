@@ -309,3 +309,72 @@ def test_real_fast_to_agent_handoff_only_searches_missing_information() -> None:
     assert result.retrieval_calls == 2
     assert result.execution.budget.evidence_assessments == 2
     assert result.execution.budget.deadline == 100.0
+
+
+class _ContextRetriever(_Retriever):
+    """命中块 A 带有父块扩展后的上下文。"""
+
+    CONTEXT = "文件名：a.md\n章节：存储 › 方案\n页码：无\n内容：\n背景说明。A 用 SQLite。后续计划"
+
+    def retrieve(self, question, strategy, top_k):
+        results = super().retrieve(question, strategy, top_k)
+        return [
+            r.model_copy(update={"context": self.CONTEXT}) if r.chunk_id == "a" else r
+            for r in results
+        ]
+
+
+def test_fast_lane_uses_parent_context_but_cites_hit_chunk() -> None:
+    """证据、生成提示词使用父块上下文；引用原文仍是命中子块。"""
+    retriever = _ContextRetriever()
+    provider = _Provider()
+    lane = FastLane(
+        retriever=retriever, quality_evaluator=_Quality(True),
+        generator=AnswerGenerator(PromptBuilder(), provider), clock=lambda: 1.0,
+    )
+
+    output = lane.run(
+        "存储是什么？", [], query="A 存储",
+        bundle=EvidenceBundle(budget=ExecutionBudget(deadline=100.0)),
+    )
+
+    [item] = [e for e in output.bundle.evidence if e.chunk_id == "a"]
+    assert item.context == _ContextRetriever.CONTEXT
+    prompt = provider.messages[0][-1]["content"]
+    assert "[2]\n" + _ContextRetriever.CONTEXT in prompt
+    assert "章节：存储 › 方案" in prompt
+    [citation] = output.result.citations
+    assert citation.chunk_id == "a"
+    assert citation.chunk_text == "A 用 SQLite"
+
+
+def test_prompt_formats_evidence_with_and_without_context() -> None:
+    plain = EvidenceItem(number=1, chunk_id="c", doc_id="d", filename="f.md", page=3, text="正文")
+    rich = plain.model_copy(update={"number": 2, "context": "文件名：f.md\n章节：一\n页码：3\n内容：\n全文"})
+
+    assert PromptBuilder.format_evidence(plain) == "[1]\n文件名：f.md\n页码：3\n内容：\n正文"
+    assert PromptBuilder.format_evidence(rich) == "[2]\n文件名：f.md\n章节：一\n页码：3\n内容：\n全文"
+
+
+def test_judge_payload_replaces_text_with_context() -> None:
+    from app.infrastructure.conversations.quality import _judge_item
+    item = EvidenceItem(number=1, chunk_id="c", doc_id="d", filename="f.md", page=None,
+                        text="命中块", context="父块全文")
+
+    payload = _judge_item(item)
+
+    assert payload["text"] == "父块全文"
+    assert "context" not in payload
+    assert _judge_item(item.model_copy(update={"context": None}))["text"] == "命中块"
+
+
+def test_baseline_prompt_uses_result_context_when_present() -> None:
+    """基线问答（评估与旧查询接口）同样使用父块上下文。"""
+    plain = RetrievalResult(chunk_id="c", doc_id="d", text="命中", filename="f.md",
+                            page=None, chunk_index=0, score=1.0)
+    rich = plain.model_copy(update={"context": "文件名：f.md\n页码：无\n内容：\n父块全文"})
+
+    content = PromptBuilder().build("问题", [plain, rich])[-1]["content"]
+
+    assert "[1]\n文件名：f.md\n页码：无\n内容：\n命中" in content
+    assert "[2]\n文件名：f.md\n页码：无\n内容：\n父块全文" in content

@@ -24,6 +24,7 @@ class EvidenceItem(BaseModel):
         text: 实际块正文。
         kb_id: 实际知识库归属。
         doc_updated_at: 命中版本的明确时间，未知保持None。
+        context: 父块扩展后的完整上下文；None 时按块正文格式化。
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -36,6 +37,7 @@ class EvidenceItem(BaseModel):
     text: str = Field(min_length=1)
     kb_id: str = Field(default=DEFAULT_KB_ID, pattern=KB_ID_PATTERN)
     doc_updated_at: AwareDatetime | None = None
+    context: str | None = Field(default=None, min_length=1)
 
 
 class EvidenceAssessment(BaseModel):

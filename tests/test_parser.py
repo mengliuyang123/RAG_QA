@@ -23,9 +23,71 @@ def test_markdown_parser_reads_utf8_text(tmp_path: Path) -> None:
     segments = MarkdownParser().parse(path)
 
     assert len(segments) == 1
-    assert segments[0].text == "# 标题\n内容"
+    assert segments[0].text == "内容"
+    assert segments[0].heading_path == ("标题",)
     assert segments[0].page is None
     assert segments[0].filename == "notes.md"
+
+
+def _sections(text: str, tmp_path: Path) -> list[tuple[tuple[str, ...], str]]:
+    path = tmp_path / "doc.md"
+    path.write_text(text, encoding="utf-8")
+    return [(s.heading_path, s.text) for s in MarkdownParser().parse(path)]
+
+
+def test_markdown_multi_level_and_sibling_headings(tmp_path: Path) -> None:
+    text = (
+        "# 报销制度\n总则正文\n"
+        "## 差旅费\n差旅正文\n### 住宿\n每晚 500 元\n"
+        "## 招待费\n招待正文\n"
+    )
+
+    assert _sections(text, tmp_path) == [
+        (("报销制度",), "总则正文"),
+        (("报销制度", "差旅费"), "差旅正文"),
+        (("报销制度", "差旅费", "住宿"), "每晚 500 元"),
+        (("报销制度", "招待费"), "招待正文"),
+    ]
+
+
+def test_markdown_hash_lines_inside_code_fence_are_body(tmp_path: Path) -> None:
+    text = "# 安装\n```bash\n# 这是注释\npip install x\n```\n~~~\n## 也不是标题\n~~~\n"
+
+    assert _sections(text, tmp_path) == [
+        (("安装",), "```bash\n# 这是注释\npip install x\n```\n~~~\n## 也不是标题\n~~~"),
+    ]
+
+
+def test_markdown_preamble_and_no_headings(tmp_path: Path) -> None:
+    """标题前的正文路径为空；没有标题的文档只有一个空路径片段；空章节被跳过。"""
+    assert _sections("前言\n# 第一章\n\n# 第二章\n正文", tmp_path) == [
+        ((), "前言"), (("第二章",), "正文"),
+    ]
+    assert _sections("纯文本\n#不是标题\n第二行", tmp_path) == [
+        ((), "纯文本\n#不是标题\n第二行"),
+    ]
+
+
+def test_markdown_closing_hashes_and_level_jump(tmp_path: Path) -> None:
+    text = "## 二级 ##\nA\n# 一级\nB\n### 三级\nC"
+
+    assert _sections(text, tmp_path) == [
+        (("二级",), "A"), (("一级",), "B"), (("一级", "三级"), "C"),
+    ]
+
+
+def test_pdf_and_text_have_no_heading_path(tmp_path: Path) -> None:
+    text_path = tmp_path / "a.txt"
+    text_path.write_text("# 不识别\n内容", encoding="utf-8")
+    pdf_path = tmp_path / "a.pdf"
+    document = fitz.open()
+    document.new_page().insert_text((72, 72), "Chapter 1")
+    document.save(pdf_path)
+    document.close()
+
+    segments = [*TextParser().parse(text_path), *PDFParser().parse(pdf_path)]
+
+    assert segments and all(s.heading_path == () for s in segments)
 
 
 def test_text_parser_reads_utf8_text(tmp_path: Path) -> None:

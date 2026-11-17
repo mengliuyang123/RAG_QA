@@ -15,6 +15,27 @@ def test_settings_reject_overlap_not_smaller_than_chunk_size() -> None:
         Settings(chunk_size=100, chunk_overlap=100, _env_file=None)
 
 
+def test_parent_chunk_size_defaults_to_1500() -> None:
+    """父块上限默认 1500，且不小于子块上限。"""
+    settings = Settings(_env_file=None)
+
+    assert settings.parent_chunk_size == 1500
+    assert settings.parent_chunk_size >= settings.chunk_size
+
+
+def test_settings_reject_parent_chunk_smaller_than_chunk() -> None:
+    """父块上限小于子块上限时应拒绝配置。"""
+    with pytest.raises(ValidationError, match="parent_chunk_size"):
+        Settings(chunk_size=500, parent_chunk_size=400, _env_file=None)
+
+
+def test_parent_chunk_size_reads_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PARENT_CHUNK_SIZE 环境变量覆盖默认值。"""
+    monkeypatch.setenv("PARENT_CHUNK_SIZE", "2000")
+
+    assert Settings(_env_file=None).parent_chunk_size == 2000
+
+
 def test_settings_allows_missing_api_key_for_offline_work() -> None:
     """离线开发和测试不应强制要求 OpenAI API Key。"""
     settings = Settings(_env_file=None)

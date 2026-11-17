@@ -56,13 +56,26 @@ class PromptBuilder:
 
     @staticmethod
     def _format_context(index: int, result: RetrievalResult) -> str:
-        """把一条检索结果格式化为编号明确的上下文块。"""
+        """把一条检索结果格式化为编号明确的上下文块；有父块上下文时使用上下文。"""
+        if result.context is not None:
+            return f"[{index}]\n{result.context}"
         page = str(result.page) if result.page is not None else "无"
         return (
             f"[{index}]\n"
             f"文件名：{result.filename}\n"
             f"页码：{page}\n"
             f"内容：\n{result.text}"
+        )
+
+    @staticmethod
+    def format_evidence(item: EvidenceItem) -> str:
+        """格式化一条编号证据：有父块上下文时用上下文，否则用命中块正文。"""
+        if item.context is not None:
+            return f"[{item.number}]\n{item.context}"
+        page = str(item.page) if item.page is not None else "无"
+        return (
+            f"[{item.number}]\n文件名：{item.filename}\n页码：{page}\n"
+            f"内容：\n{item.text}"
         )
 
     def build_numbered(
@@ -96,13 +109,7 @@ class PromptBuilder:
             messages.append({
                 "role": "assistant", "content": turn["assistant_message"],
             })
-        blocks = []
-        for item in evidence:
-            page = str(item.page) if item.page is not None else "无"
-            blocks.append(
-                f"[{item.number}]\n文件名：{item.filename}\n页码：{page}\n"
-                f"内容：\n{item.text}"
-            )
+        blocks = [self.format_evidence(item) for item in evidence]
         messages.append({
             "role": "user",
             "content": "当前批准上下文：\n\n" + "\n\n".join(blocks)

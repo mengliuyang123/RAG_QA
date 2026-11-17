@@ -19,11 +19,13 @@ from app.bootstrap.container import RuntimeOptions
 from app.bootstrap.container import build_application_container
 from app.bootstrap.factories import VectorStoreAdapter
 from app.config import Settings
-from app.domain.documents import DocumentChunk, DocumentSegment
+from app.domain.documents import DocumentChunk, DocumentSegment, index_text
+from app.application.ingestion.markdown_sections import split_markdown_sections
 from evaluation.models import CorpusDataset
 
 
-COLLECTION_SCHEMA_VERSION = "1"
+# 2：按 Markdown 标题拆章节、父子分块、带结构前缀向量化。
+COLLECTION_SCHEMA_VERSION = "2"
 DOCUMENT_NAMESPACE = uuid.UUID("f93b85f6-4b9a-5ed5-922f-729fea21af48")
 
 
@@ -95,7 +97,8 @@ class IndexConfig(BaseModel):
         embedding_origin: 不含路径和凭据的 Embedding 服务 origin。
         embedding_model: Embedding 模型名。
         chunk_size: 文本块最大字符数。
-        chunk_overlap: 相邻文本块重叠字符数。
+        chunk_overlap: 相邻父块重叠字符数。
+        parent_chunk_size: 父块最大字符数。
         embedding_batch_size: 单次文档向量请求上限。
         collection_schema_version: collection 结构版本。
     """
@@ -106,6 +109,7 @@ class IndexConfig(BaseModel):
     embedding_model: str = Field(min_length=1)
     chunk_size: int = Field(gt=0)
     chunk_overlap: int = Field(ge=0)
+    parent_chunk_size: int = Field(default=1500, gt=0)
     embedding_batch_size: int = Field(gt=0)
     collection_schema_version: str = COLLECTION_SCHEMA_VERSION
 
@@ -124,6 +128,7 @@ class IndexConfig(BaseModel):
             embedding_model=settings.embedding_model,
             chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,
+            parent_chunk_size=settings.parent_chunk_size,
             embedding_batch_size=settings.embedding_batch_size,
         )
 
@@ -299,12 +304,17 @@ def _build_chunks(
                 f"{entry.filename}:{entry.sha256}",
             )
         )
-        segment = DocumentSegment(
-            text=corpus.documents[entry.filename],
-            page=None,
-            filename=entry.filename,
-        )
-        chunks.extend(chunker.split(document_id, [segment]))
+        # 与真实入库一致：按 Markdown 标题拆章节并带标题路径。
+        segments = [
+            DocumentSegment(
+                text=body, page=None, filename=entry.filename,
+                heading_path=heading_path,
+            )
+            for heading_path, body in split_markdown_sections(
+                corpus.documents[entry.filename],
+            )
+        ]
+        chunks.extend(chunker.split(document_id, segments))
     return chunks
 
 
@@ -338,7 +348,7 @@ def _prepare_index(
         for start in range(0, expected_count, batch_size):
             batch = chunks[start:start + batch_size]
             embeddings = embedder.embed_documents(
-                [chunk.text for chunk in batch]
+                [index_text(chunk) for chunk in batch]
             )
             vector_store.add_chunks(batch, embeddings)
         vector_store.update_collection_metadata(

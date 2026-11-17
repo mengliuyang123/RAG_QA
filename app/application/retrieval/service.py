@@ -18,8 +18,11 @@ from app.application.ports.embedding import EmbeddingProvider
 from app.application.ports.keyword_index import KeywordIndex
 from app.application.ports.ingestion_jobs import DocumentPublication
 from app.application.ports.reranking import Reranker
+from app.application.ports.vector_store import ParentChunkReader
 from app.application.ports.vector_store import VectorStoreReader
 from app.application.retrieval.fusion import reciprocal_rank_fusion
+from app.application.retrieval.parents import parent_context
+from app.domain.documents import DocumentChunk
 from app.domain.errors import (
     InvalidQuestionError,
     InvalidTopKError,
@@ -37,6 +40,8 @@ logger = logging.getLogger(__name__)
 
 
 _PUBLICATION_ATTEMPTS = 3
+# 父块扩展开启时子块候选的放大倍数（受 top_k_rerank 限制），见 design D4。
+_PARENT_CANDIDATE_FACTOR = 3
 
 
 class _PublicationAdvanced(Exception):
@@ -145,6 +150,8 @@ class VectorRetriever:
             score=1.0 - match.distance,
             kb_id=chunk.kb_id,
             doc_updated_at=chunk.doc_updated_at,
+            parent_index=chunk.parent_index,
+            heading_path=chunk.heading_path,
         )
 
 
@@ -168,6 +175,7 @@ class RetrievalService:
         clock: Callable[[], float] = perf_counter,
         *,
         publication: DocumentPublication | None = None,
+        parent_reader: ParentChunkReader | None = None,
     ) -> None:
         """装配检索策略用到的端口实现。
 
@@ -178,6 +186,8 @@ class RetrievalService:
             top_k_rerank: 重排前保留的融合候选数。
             clock: 返回单调时间的可替换函数。
             publication: 只读发布登记；生产装配必须提供。
+            parent_reader: 读取父块兄弟子块；为空时不扩展上下文、不放大候选，
+                只按父块去重。
 
         Returns:
             None。
@@ -188,6 +198,7 @@ class RetrievalService:
         self._top_k_rerank = top_k_rerank
         self._clock = clock
         self._publication = publication
+        self._parent_reader = parent_reader
 
     def retrieve(
         self,
@@ -228,12 +239,16 @@ class RetrievalService:
         validate_kb_ids(kb_ids)
         if kb_ids == ():
             return []
+        child_k = self._child_candidates(top_k)
         for attempt in range(_PUBLICATION_ATTEMPTS):
             excluded_doc_ids = self._unpublished_documents()
             try:
-                return self._retrieve_snapshot(
-                    normalized_question, selected_strategy, top_k, kb_ids,
+                children = self._retrieve_snapshot(
+                    normalized_question, selected_strategy, child_k, kb_ids,
                     excluded_doc_ids,
+                )
+                return self._expand_to_parents(
+                    children, top_k, kb_ids, excluded_doc_ids,
                 )
             except _PublicationAdvanced:
                 # 快照之后有文档发布（例如替换版本提交并删除旧版本），旧排除集
@@ -306,6 +321,70 @@ class RetrievalService:
             if result.doc_id in excluded_doc_ids:
                 raise VectorStoreError("检索结果包含未发布文档")
         return results
+
+    def _child_candidates(self, top_k: int) -> int:
+        """父块扩展开启时放大子块候选数，保证按父块合并后仍有足够证据。"""
+        if self._parent_reader is None:
+            return top_k
+        return max(top_k, min(top_k * _PARENT_CANDIDATE_FACTOR, self._top_k_rerank))
+
+    def _expand_to_parents(
+        self,
+        children: list[RetrievalResult],
+        top_k: int,
+        kb_ids: tuple[str, ...] | None,
+        excluded_doc_ids: tuple[str, ...],
+    ) -> list[RetrievalResult]:
+        """按父块合并命中子块，保留每组排名最高的子块，并补齐父块上下文。
+
+        旧格式块（无父块序号）各自成组且不扩展；兄弟子块与命中块版本不一致、
+        不连续或缺失命中块时，该条证据退回为只用命中子块（``context=None``）。
+        """
+        representatives: list[RetrievalResult] = []
+        seen: set[tuple[str, int | str]] = set()
+        for result in children:
+            key = (
+                (result.doc_id, result.parent_index)
+                if result.parent_index is not None
+                else (result.doc_id, "chunk:" + result.chunk_id)
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            representatives.append(result)
+            if len(representatives) == top_k:
+                break
+        if self._parent_reader is None:
+            return representatives
+        parents = tuple(
+            (result.doc_id, result.parent_index)
+            for result in representatives if result.parent_index is not None
+        )
+        if not parents:
+            return representatives
+        check_cancellation()
+        siblings: dict[tuple[str, int], list[DocumentChunk]] = {}
+        for chunk in self._parent_reader.read_parent_chunks(
+            parents, kb_ids=kb_ids, excluded_doc_ids=excluded_doc_ids,
+        ):
+            if kb_ids is not None and chunk.kb_id not in kb_ids:
+                raise VectorStoreError("父块读取违反知识库范围")
+            if chunk.doc_id in excluded_doc_ids:
+                raise VectorStoreError("父块读取返回了未发布文档")
+            if chunk.parent_index is not None:
+                siblings.setdefault((chunk.doc_id, chunk.parent_index), []).append(chunk)
+        expanded = []
+        for result in representatives:
+            group = (
+                siblings.get((result.doc_id, result.parent_index))
+                if result.parent_index is not None else None
+            )
+            context = parent_context(result, group) if group else None
+            expanded.append(
+                result if context is None
+                else result.model_copy(update={"context": context})
+            )
+        return expanded
 
     def _unpublished_documents(self) -> tuple[str, ...]:
         check_cancellation()

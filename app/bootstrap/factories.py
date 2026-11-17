@@ -151,7 +151,7 @@ EmbeddingProviderFactory = Callable[
     [str | None, str, str, int],
     EmbeddingProvider,
 ]
-ChunkerFactory = Callable[[int, int], Chunker]
+ChunkerFactory = Callable[[int, int, int], Chunker]
 ParserResolverFactory = Callable[[], ParserResolver]
 KeywordIndexFactory = Callable[[VectorStoreAdapter], KeywordIndex]
 RepairLogFactory = Callable[[Path], RepairLogWriter]
@@ -239,10 +239,13 @@ def _create_embedding_provider(
     )
 
 
-def _create_chunker(chunk_size: int, chunk_overlap: int) -> Chunker:
+def _create_chunker(
+    chunk_size: int, chunk_overlap: int, parent_chunk_size: int,
+) -> Chunker:
     return RecursiveDocumentChunker(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
+        parent_chunk_size=parent_chunk_size,
     )
 
 

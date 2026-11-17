@@ -678,6 +678,7 @@ class LangGraphConversationAgent:
                             "text": result.text,
                             "kb_id": result.kb_id,
                             "doc_updated_at": result.doc_updated_at,
+                            "context": result.context,
                         }
                     )
                 observations.append(RetrievalObservation(
@@ -689,7 +690,8 @@ class LangGraphConversationAgent:
                         "number": number,
                         "filename": result.filename,
                         "page": result.page,
-                        "text": result.text,
+                        # 父块扩展后的上下文已含文件名、章节和页码；旧块只给命中块正文。
+                        "text": result.context or result.text,
                     }
                 )
             messages.append(

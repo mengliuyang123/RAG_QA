@@ -187,3 +187,67 @@ def test_default_factory_and_ingestion_do_not_load_full_corpus(monkeypatch):
         pipeline._rebuild_keyword_index()
         pipeline._delete_document_unlocked(doc.doc_id)
         assert index.search('数据库', 1) == []
+
+
+def _structured(doc_id, index, parent_index, text, *, kb_id='ops', heading_path=('报销制度', '差旅费', '住宿')):
+    return DocumentChunk(id=f'{doc_id}:{index}', doc_id=doc_id, text=text, filename='制度.md',
+                         page=None, chunk_index=index, kb_id=kb_id, parent_index=parent_index,
+                         heading_path=heading_path)
+
+
+def test_heading_words_are_searchable_but_not_in_chunk_text():
+    with isolated_database() as database:
+        store = PostgresVectorStore(database, 'knowledge')
+        doc = _structured(str(uuid4()), 0, 0, '标准为每晚 500 元')
+        other = chunk('无关的天气预报')
+        store.add_chunks([doc, other], [[1., 0.]] * 2)
+        index = keyword(database)
+        hits = index.search('差旅住宿报销标准', 5)
+        assert [r.chunk_id for r in hits] == [doc.id]
+        assert hits[0].text == '标准为每晚 500 元'
+        assert hits[0].heading_path == ('报销制度', '差旅费', '住宿')
+        assert hits[0].parent_index == 0
+        stored = {c.id: c for c in store.list_chunks()}
+        assert stored[doc.id].text == '标准为每晚 500 元'
+        assert stored[doc.id].heading_path == ('报销制度', '差旅费', '住宿')
+
+
+def test_legacy_metadata_without_structure_fields_is_readable():
+    from psycopg.types.json import Jsonb
+    with isolated_database() as database:
+        store = PostgresVectorStore(database, 'knowledge')
+        store.add_chunks([chunk('占位')], [[1., 0.]])
+        identity = str(uuid4())
+        legacy = {'doc_id': identity, 'filename': 'old.md', 'page': 0, 'chunk_index': 0,
+                  'kb_id': 'ops', 'doc_updated_at': None}
+        with database.connection() as connection:
+            connection.execute(
+                'INSERT INTO vector_chunks(collection,id,doc_id,kb_id,metadata,text,embedding,search_text) '
+                "VALUES ('knowledge',%s,%s,'ops',%s,'旧格式数据库正文','[1,0]'::vector,'旧 格式 数据库 正文')",
+                (identity + ':0', identity, Jsonb(legacy)))
+        old = {c.id: c for c in store.list_chunks()}[identity + ':0']
+        assert old.parent_index is None and old.heading_path == ()
+        hit = keyword(database).search('数据库', 5)[0]
+        assert hit.chunk_id == identity + ':0' and hit.parent_index is None
+        from uuid import UUID
+        assert [h.chunk_id for h in store.list_chunk_headers(UUID(identity))] == [identity + ':0']
+        assert store.read_parent_chunks(((identity, 0),)) == []
+
+
+def test_read_parent_chunks_respects_scope_and_exclusions():
+    with isolated_database() as database:
+        store = PostgresVectorStore(database, 'knowledge')
+        a, b, private = str(uuid4()), str(uuid4()), str(uuid4())
+        chunks = [
+            _structured(a, 0, 0, 'A0'), _structured(a, 1, 0, 'A1'), _structured(a, 2, 1, 'A2'),
+            _structured(b, 0, 0, 'B0'),
+            _structured(private, 0, 0, 'P0', kb_id='private'),
+        ]
+        store.add_chunks(chunks, [[1., 0.]] * len(chunks))
+        both = store.read_parent_chunks(((a, 0), (b, 0), (a, 0)), kb_ids=('ops',))
+        assert [c.text for c in both if c.doc_id == a] == ['A0', 'A1']
+        assert [c.text for c in both if c.doc_id == b] == ['B0']
+        assert store.read_parent_chunks(((private, 0),), kb_ids=('ops',)) == []
+        assert store.read_parent_chunks(((a, 0),), excluded_doc_ids=(a,)) == []
+        assert store.read_parent_chunks(((a, 0),), kb_ids=()) == []
+        assert [c.text for c in store.read_parent_chunks(((a, 1),))] == ['A2']

@@ -5,6 +5,7 @@ from collections.abc import Iterator
 
 from app.application.ports.generation import LLMProvider
 from app.application.query.context_budget import PromptBudgetGuard
+from app.application.query.context_budget import fit_evidence_to_budget
 from app.application.query.prompting import PromptBuilder
 from app.domain.agent_quality import EvidenceItem
 from app.domain.retrieval import RetrievalResult
@@ -83,9 +84,16 @@ class AnswerGenerator:
         Returns:
             尚待规则校验的完整回答。
         """
+        guard = self._prompt_guard
+        if guard is not None:
+            # 父块上下文较长：超出预算时整条移除排名最低的证据，而不是直接失败。
+            evidence = fit_evidence_to_budget(
+                evidence,
+                lambda items: guard.ensure(
+                    self._prompt_builder.build_numbered(question, history, items),
+                ),
+            )
         messages = self._prompt_builder.build_numbered(
             question, history, evidence,
         )
-        if self._prompt_guard is not None:
-            self._prompt_guard.ensure(messages)
         return self._llm_provider.generate(messages)

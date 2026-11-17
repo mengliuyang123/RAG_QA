@@ -13,7 +13,7 @@ from xml.etree import ElementTree
 
 from app.application.errors import DocumentParsingError
 from app.domain.documents import DocumentSegment
-from app.infrastructure.parsing.base import BaseParser
+from app.infrastructure.parsing.base import BaseParser, HeadingTracker
 
 
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -96,11 +96,70 @@ def _word_paragraph(paragraph: ElementTree.Element) -> str:
     return "".join(parts)
 
 
-def _word_blocks(container: ElementTree.Element) -> Iterator[str]:
-    """按文档顺序产出段落与表格行；表格单元格用 | 分隔，保留行内对应关系。"""
+_HEADING_NAME = re.compile(r"^(?:heading|标题)\s*([1-9])$", re.IGNORECASE)
+
+
+def _outline_level(properties: ElementTree.Element | None) -> int | None:
+    """读取 w:outlineLvl（0 基，9 表示正文），返回 1 基标题级别。"""
+    if properties is None:
+        return None
+    node = properties.find(W + "outlineLvl")
+    if node is None:
+        return None
+    try:
+        value = int(node.get(W + "val", ""))
+    except ValueError:
+        return None
+    return value + 1 if 0 <= value <= 8 else None
+
+
+def _heading_styles(package: _Package) -> dict[str, int]:
+    """把样式 ID 映射为标题级别：样式名为 Heading N / 标题 N，或样式设置了大纲级别。"""
+    if not package.has("word/styles.xml"):
+        return {}
+    levels: dict[str, int] = {}
+    for style in package.xml("word/styles.xml").iter(W + "style"):
+        if style.get(W + "type") != "paragraph":
+            continue
+        style_id = style.get(W + "styleId")
+        if not style_id:
+            continue
+        name = style.find(W + "name")
+        match = _HEADING_NAME.match(" ".join((name.get(W + "val", "") if name is not None else "").split()))
+        level = int(match.group(1)) if match else _outline_level(style.find(W + "pPr"))
+        if level is not None:
+            levels[style_id] = level
+    return levels
+
+
+def _paragraph_heading_level(
+    paragraph: ElementTree.Element, styles: dict[str, int],
+) -> int | None:
+    """段落自身的大纲级别优先，其次是段落样式对应的标题级别。"""
+    properties = paragraph.find(W + "pPr")
+    direct = _outline_level(properties)
+    if direct is not None:
+        return direct
+    style = properties.find(W + "pStyle") if properties is not None else None
+    style_id = style.get(W + "val") if style is not None else None
+    if not style_id:
+        return None
+    if style_id in styles:
+        return styles[style_id]
+    match = _HEADING_NAME.match(style_id)
+    return int(match.group(1)) if match else None
+
+
+def _word_blocks(
+    container: ElementTree.Element, styles: dict[str, int],
+) -> Iterator[tuple[int | None, str]]:
+    """按文档顺序产出 ``(标题级别, 文本)``：正文和表格行的级别为 None。
+
+    表格单元格用 | 分隔，保留行内对应关系；表格里的段落不作为标题。
+    """
     for child in container:
         if child.tag == W + "p":
-            yield _word_paragraph(child)
+            yield _paragraph_heading_level(child, styles), _word_paragraph(child)
         elif child.tag == W + "tbl":
             for row in child.iter(W + "tr"):
                 cells = [
@@ -108,18 +167,18 @@ def _word_blocks(container: ElementTree.Element) -> Iterator[str]:
                     for cell in row.iter(W + "tc")
                 ]
                 if any(cells):
-                    yield " | ".join(cells)
-            yield ""
+                    yield None, " | ".join(cells)
+            yield None, ""
         elif child.tag == W + "sdt":
             content = child.find(W + "sdtContent")
             if content is not None:
-                yield from _word_blocks(content)
+                yield from _word_blocks(content, styles)
 
 
 class DocxParser(BaseParser):
-    """把 Word 正文（段落、表格、页眉页脚除外）读成一个逻辑片段。
+    """按标题样式把 Word 正文（段落、表格，页眉页脚除外）切成章节片段。
 
-    .docx 没有固定分页，与 Markdown 一样不提供页码。
+    .docx 没有固定分页，与 Markdown 一样不提供页码；标题段落只进入标题路径，不进入正文。
     """
 
     def parse_iter(self, path: str | Path) -> Iterator[DocumentSegment]:
@@ -128,14 +187,36 @@ class DocxParser(BaseParser):
         try:
             try:
                 root = package.xml("word/document.xml")
+                styles = _heading_styles(package)
             except (ElementTree.ParseError, KeyError, zipfile.BadZipFile, OSError) as exc:
                 raise DocumentParsingError(f"无法解析 Word 文档：{document_path.name}") from exc
         finally:
             archive.close()
         body = root.find(W + "body")
-        text = _clean(list(_word_blocks(body))) if body is not None else ""
-        if text:
-            yield DocumentSegment(text=text, page=None, filename=document_path.name)
+        if body is None:
+            return
+        tracker = HeadingTracker()
+        path_now: tuple[str, ...] = ()
+        lines: list[str] = []
+        for level, text in _word_blocks(body, styles):
+            if level is not None and text.strip():
+                section = _clean(lines)
+                if section:
+                    yield DocumentSegment(
+                        text=section, page=None, filename=document_path.name,
+                        heading_path=path_now,
+                    )
+                lines = []
+                tracker.enter(level, text)
+                path_now = tracker.path
+                continue
+            lines.append(text)
+        section = _clean(lines)
+        if section:
+            yield DocumentSegment(
+                text=section, page=None, filename=document_path.name,
+                heading_path=path_now,
+            )
 
 
 def _slide_order(package: _Package) -> list[str]:
@@ -197,11 +278,13 @@ class PptxParser(BaseParser):
     def parse_iter(self, path: str | Path) -> Iterator[DocumentSegment]:
         document_path = self._validate_path(path)
         archive, package = _open(document_path, "PowerPoint", "ppt/presentation.xml")
-        slides: list[tuple[int, str]] = []
+        slides: list[tuple[int, str, tuple[str, ...]]] = []
         try:
             try:
                 for number, slide in enumerate(_slide_order(package), start=1):
-                    lines = _drawing_text(package.xml(slide))
+                    slide_root = package.xml(slide)
+                    lines = _drawing_text(slide_root)
+                    title = _slide_title(slide_root)
                     notes = _notes_part(package, slide)
                     if notes:
                         # 备注页里也有幻灯片缩略图占位，只取正文占位符的文字。
@@ -214,15 +297,33 @@ class PptxParser(BaseParser):
                             lines += ["", "备注：", *note_lines]
                     text = _clean(lines)
                     if text:
-                        slides.append((number, text))
+                        slides.append((number, text, (title,) if title else ()))
             except (ElementTree.ParseError, KeyError, zipfile.BadZipFile, OSError) as exc:
                 raise DocumentParsingError(f"无法解析 PowerPoint 文档：{document_path.name}") from exc
         finally:
             archive.close()
-        for number, text in slides:
-            yield DocumentSegment(text=text, page=number, filename=document_path.name)
+        for number, text, heading_path in slides:
+            yield DocumentSegment(
+                text=text, page=number, filename=document_path.name,
+                heading_path=heading_path,
+            )
+
+
+def _placeholder_type(shape: ElementTree.Element) -> str | None:
+    placeholder = shape.find(f"{P}nvSpPr/{P}nvPr/{P}ph")
+    return None if placeholder is None else placeholder.get("type")
 
 
 def _is_body_placeholder(shape: ElementTree.Element) -> bool:
-    placeholder = shape.find(f"{P}nvSpPr/{P}nvPr/{P}ph")
-    return placeholder is not None and placeholder.get("type") == "body"
+    return _placeholder_type(shape) == "body"
+
+
+def _slide_title(root: ElementTree.Element) -> str:
+    """返回幻灯片标题占位符（title / ctrTitle）的文字，合并为一行；没有时为空。
+
+    标题文字仍保留在幻灯片正文里，与改动前一致。
+    """
+    for shape in root.iter(P + "sp"):
+        if _placeholder_type(shape) in ("title", "ctrTitle"):
+            return " ".join(" ".join(_drawing_text(shape)).split())
+    return ""

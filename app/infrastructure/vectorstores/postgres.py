@@ -9,7 +9,7 @@ from pgvector import Vector
 from psycopg.types.json import Jsonb
 
 from app.application.errors import VectorStoreError
-from app.domain.documents import DocumentChunk
+from app.domain.documents import DocumentChunk, index_text
 from app.domain.knowledge_bases import validate_kb_ids
 from app.domain.knowledge_views import IndexedChunkHeader, IndexedDocumentHeader
 from app.domain.retrieval import VectorSearchResult
@@ -89,6 +89,16 @@ class PostgresVectorStore:
             raise VectorStoreError('文本块数量与向量数量不一致')
         if not chunks:
             return
+        with self._connection() as connection:
+            self.insert_chunks(connection, chunks, embeddings)
+
+    def insert_chunks(self, connection: psycopg.Connection, chunks: list[DocumentChunk],
+                      embeddings: list[list[float]]) -> None:
+        """在调用方的事务内写入一批文本块，校验并锁定集合维度。"""
+        if len(chunks) != len(embeddings):
+            raise VectorStoreError('文本块数量与向量数量不一致')
+        if not chunks:
+            return
         dimensions = len(embeddings[0])
         if any(len(v) != dimensions for v in embeddings):
             raise VectorStoreError('同一批次向量维度不一致')
@@ -97,16 +107,15 @@ class PostgresVectorStore:
             metadata = chunk.model_dump(mode='json', exclude={'id', 'text'})
             metadata['page'] = chunk.page or 0
             values.append((self._collection_name, chunk.id, chunk.doc_id, chunk.kb_id,
-                           Jsonb(metadata), chunk.text, self._vector(vector), search_text(chunk.text)))
-        with self._connection() as connection:
-            row = connection.execute('SELECT dimensions FROM vector_collections WHERE name=%s FOR UPDATE',
-                                     (self._collection_name,)).fetchone()
-            if row is None or row['dimensions'] not in (None, dimensions):
-                raise VectorStoreError('向量集合维度不匹配')
-            connection.execute('UPDATE vector_collections SET dimensions=%s WHERE name=%s',
-                               (dimensions, self._collection_name))
-            connection.cursor().executemany('INSERT INTO vector_chunks(collection,id,doc_id,kb_id,metadata,text,embedding,search_text) '
-                                           'VALUES (%s,%s,%s,%s,%s,%s,%s::vector,%s)', values)
+                           Jsonb(metadata), chunk.text, self._vector(vector), search_text(index_text(chunk))))
+        row = connection.execute('SELECT dimensions FROM vector_collections WHERE name=%s FOR UPDATE',
+                                 (self._collection_name,)).fetchone()
+        if row is None or row['dimensions'] not in (None, dimensions):
+            raise VectorStoreError('向量集合维度不匹配')
+        connection.execute('UPDATE vector_collections SET dimensions=%s WHERE name=%s',
+                           (dimensions, self._collection_name))
+        connection.cursor().executemany('INSERT INTO vector_chunks(collection,id,doc_id,kb_id,metadata,text,embedding,search_text) '
+                                       'VALUES (%s,%s,%s,%s,%s,%s,%s::vector,%s)', values)
 
     @staticmethod
     def _chunk(row) -> DocumentChunk:
@@ -143,6 +152,32 @@ class PostgresVectorStore:
             query += ' ORDER BY distance,id LIMIT %s'
             rows = connection.execute(query, [*values, top_k]).fetchall()
             return [VectorSearchResult(chunk=self._chunk(r), distance=float(r['distance'])) for r in rows]
+
+    def read_parent_chunks(self, parents: tuple[tuple[str, int], ...], *,
+                           kb_ids: tuple[str, ...] | None = None,
+                           excluded_doc_ids: tuple[str, ...] = ()) -> list[DocumentChunk]:
+        """按 (doc_id, parent_index) 批量读取兄弟子块，沿用召回的范围与排除条件。"""
+        validate_kb_ids(kb_ids)
+        if not parents or kb_ids == ():
+            return []
+        parents = tuple(dict.fromkeys(parents))
+        doc_ids = [doc_id for doc_id, _ in parents]
+        indexes = [int(index) for _, index in parents]
+        # 先用 doc_id 命中 vector_chunks_doc_id 索引，再按 metadata 中的父块序号过滤。
+        query = ("SELECT c.id,c.text,c.metadata FROM vector_chunks c "
+                 "JOIN unnest(%s::text[], %s::int[]) AS p(doc_id, parent_index) "
+                 "ON c.doc_id=p.doc_id AND (c.metadata->>'parent_index')::int=p.parent_index "
+                 "WHERE c.collection=%s AND c.doc_id=ANY(%s)")
+        values: list[object] = [doc_ids, indexes, self._collection_name, doc_ids]
+        if kb_ids is not None:
+            query += ' AND c.kb_id=ANY(%s)'
+            values.append(list(kb_ids))
+        if excluded_doc_ids:
+            query += ' AND NOT (c.doc_id=ANY(%s))'
+            values.append(list(excluded_doc_ids))
+        query += " ORDER BY c.doc_id,(c.metadata->>'chunk_index')::int,c.id"
+        with self._connection() as connection:
+            return [self._chunk(r) for r in connection.execute(query, values)]
 
     def list_chunks(self) -> list[DocumentChunk]:
         with self._connection() as connection:

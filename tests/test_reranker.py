@@ -66,10 +66,32 @@ def test_remote_reranker_maps_indices_and_sorts_by_relevance() -> None:
         "payload": (
             '{"model":"BAAI/bge-reranker-v2-m3",'
             '"query":"什么最相关？",'
-            '"documents":["普通文本","与问题高度相关"],'
+            '"documents":["doc-a.md\\n普通文本","doc-b.md\\n与问题高度相关"],'
             '"top_n":2}'
         ),
     }
+
+
+def test_remote_reranker_sends_child_index_text_not_parent_context() -> None:
+    """重排只收到“文件名 › 标题路径”前缀加子块正文，父块上下文不会被发送。"""
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+        captured["documents"] = json.loads(request.read())["documents"]
+        return httpx.Response(200, json={"results": [{"index": 0, "relevance_score": 0.5}]})
+
+    reranker = RemoteReranker(
+        base_url="http://reranker.test/v1/", api_key="k", model="m",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    candidate = make_candidate("doc-a:0", "每晚 500 元", score=0.1).model_copy(update={
+        "heading_path": ("报销制度", "住宿"), "context": "很长的父块全文" * 100,
+    })
+
+    reranker.rerank("住宿标准", [candidate], top_k=1)
+
+    assert captured["documents"] == ["doc-a.md › 报销制度 › 住宿\n每晚 500 元"]
 
 
 def test_remote_reranker_supports_dashscope_plural_endpoint() -> None:

@@ -49,6 +49,8 @@ from app.application.ingestion.jobs import IngestionJobService
 from app.application.ingestion.job_pipeline import JobIngestionPipeline
 from app.application.ingestion.job_runner import IngestionJobRunner
 from app.application.ingestion.worker import IngestionWorker
+from app.application.ingestion.reindex import DocumentReindexService
+from app.infrastructure.persistence.reindex import PostgresDocumentReindexStore
 from app.application.admission import QuestionAdmissionController
 from app.application.ports.chunking import Chunker
 from app.application.ports.embedding import EmbeddingProvider
@@ -464,6 +466,20 @@ class ApplicationContainer:
             self._ingestion_sources_slot,
             lambda: self._factories.ingestion_sources(self._job_sources_path()),
             owned_adapter=False,
+        )
+
+    @property
+    def document_reindex_service(self) -> DocumentReindexService:
+        """按当前分块规则原地重建已发布文档；只供管理员命令行使用。
+
+        Returns:
+            共享本容器向量存储、源文件、解析、分块和向量化组件的重建服务。
+        """
+        return DocumentReindexService(
+            PostgresDocumentReindexStore(self.database, self.vector_store),
+            self.ingestion_sources, self._get_parser_resolver(), self.chunker,
+            self.embedding_provider,
+            embedding_batch_size=self._settings.embedding_batch_size,
         )
 
     @property
@@ -1078,6 +1094,7 @@ class ApplicationContainer:
         return self._factories.chunker(
             self._settings.chunk_size,
             self._settings.chunk_overlap,
+            self._settings.parent_chunk_size,
         )
 
     def _create_keyword_index(self) -> KeywordIndex:
@@ -1165,6 +1182,12 @@ class ApplicationContainer:
             keyword_retriever=self.keyword_index,
             reranker=self._get_reranker(),
             top_k_rerank=self._settings.top_k_rerank,
+            # 运行时覆盖的存储可能不支持父块读取，此时只按父块去重、不扩展。
+            parent_reader=(
+                self.vector_store
+                if callable(getattr(self.vector_store, "read_parent_chunks", None))
+                else None
+            ),
             # 已过时文档与未发布文档一样在召回前排除。
             publication=OutdatedAwarePublication(
                 self.ingestion_job_repository, PostgresDocumentReviewRepository(self.database),

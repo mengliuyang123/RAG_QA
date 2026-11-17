@@ -15,6 +15,7 @@ from app.application.errors import ConversationTimeoutError
 from app.application.errors import LLMTimeoutError
 from app.application.ports.structured_output import StructuredOutputProvider
 from app.application.query.context_budget import PromptBudgetGuard
+from app.application.query.context_budget import fit_evidence_to_budget
 from app.domain.agent_quality import AnswerAssessment
 from app.domain.agent_quality import EvidenceAssessment
 from app.domain.agent_quality import EvidenceItem
@@ -115,9 +116,22 @@ class ModelQualityEvaluator:
                 sufficient=False, relevant_numbers=[],
                 missing_information=["未检索到可用证据"], next_query=None,
             )
+        judged = evidence
+        guard = self._prompt_guard
+        if guard is not None:
+            schema = {"schema": EvidenceAssessment.model_json_schema()}
+            judged = fit_evidence_to_budget(
+                evidence,
+                lambda items: guard.ensure(
+                    self._messages(
+                        _EVIDENCE_PROMPT, self._payload(question, history, items),
+                    ),
+                    extra_payload=schema,
+                ),
+            )
         result = self._evaluate(
             _EVIDENCE_PROMPT,
-            self._payload(question, history, evidence),
+            self._payload(question, history, judged),
             EvidenceAssessment,
         )
         select_evidence(evidence, result)
@@ -148,6 +162,13 @@ class ModelQualityEvaluator:
         payload["answer"] = answer
         return self._evaluate(_ANSWER_PROMPT, payload, AnswerAssessment)
 
+    @staticmethod
+    def _messages(prompt: str, payload: dict[str, object]) -> list[dict[str, str]]:
+        return [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ]
+
     def _evaluate(
         self,
         prompt: str,
@@ -155,13 +176,7 @@ class ModelQualityEvaluator:
         result_type: type[_Result],
     ) -> _Result:
         try:
-            messages = [
-                {"role": "system", "content": prompt},
-                {
-                    "role": "user",
-                    "content": json.dumps(payload, ensure_ascii=False),
-                },
-            ]
+            messages = self._messages(prompt, payload)
             if self._prompt_guard is not None:
                 self._prompt_guard.ensure(
                     messages,
@@ -190,5 +205,13 @@ class ModelQualityEvaluator:
         return {
             "question": question,
             "history": history,
-            "evidence": [item.model_dump(mode="json") for item in evidence],
+            "evidence": [_judge_item(item) for item in evidence],
         }
+
+
+def _judge_item(item: EvidenceItem) -> dict[str, object]:
+    """证据判断看到的条目：有父块上下文时以上下文替换正文，避免同一内容出现两遍。"""
+    payload = item.model_dump(mode="json", exclude={"context"})
+    if item.context is not None:
+        payload["text"] = item.context
+    return payload

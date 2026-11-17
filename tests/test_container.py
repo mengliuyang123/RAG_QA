@@ -124,10 +124,12 @@ class _RecordingFactories:
         self,
         chunk_size: int,
         chunk_overlap: int,
+        parent_chunk_size: int,
     ) -> object:
         self.arguments["chunker"] = {
             "chunk_size": chunk_size,
             "chunk_overlap": chunk_overlap,
+            "parent_chunk_size": parent_chunk_size,
         }
         return self._adapter("chunker")
 
@@ -401,6 +403,7 @@ def test_runtime_options_override_only_requested_fields(
     assert recording.arguments["chunker"] == {
         "chunk_size": settings.chunk_size,
         "chunk_overlap": settings.chunk_overlap,
+        "parent_chunk_size": settings.parent_chunk_size,
     }
     assert recording.arguments["embedding_provider"] == {
         "api_key": settings.resolved_embedding_api_key,

@@ -140,7 +140,10 @@ class Settings(BaseSettings):
         "auto", "vector", "hybrid", "hybrid_rerank",
     ] = "auto"
 
+    # chunk_size 是子块（检索单位）上限；parent_chunk_size 是父块（生成上下文）
+    # 上限；chunk_overlap 只作用于相邻父块之间，同一父块内的子块不重叠。
     chunk_size: int = Field(default=500, gt=0)
+    parent_chunk_size: int = Field(default=1500, gt=0)
     chunk_overlap: int = Field(default=50, ge=0)
     embedding_batch_size: int = Field(default=100, gt=0)
 
@@ -535,6 +538,8 @@ class Settings(BaseSettings):
         """校验配置项之间的大小关系。"""
         if self.chunk_overlap >= self.chunk_size:
             raise ValueError("chunk_overlap 必须小于 chunk_size")
+        if self.parent_chunk_size < self.chunk_size:
+            raise ValueError("parent_chunk_size 必须大于或等于 chunk_size")
         if self.top_k_rerank < self.top_k:
             raise ValueError("top_k_rerank 必须大于或等于 top_k")
         if self.conversation_reserved_tokens >= self.conversation_context_tokens:

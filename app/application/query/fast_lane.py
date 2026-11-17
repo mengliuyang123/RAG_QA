@@ -169,6 +169,7 @@ class FastLane:
                     page=result.page, text=result.text,
                     kb_id=result.kb_id,
                     doc_updated_at=result.doc_updated_at,
+                    context=result.context,
                 ))
             self._notify(on_status, "verifying")
             self._ensure_time(budget)

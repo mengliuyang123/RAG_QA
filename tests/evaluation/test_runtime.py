@@ -332,7 +332,7 @@ def test_runtime_reuses_matching_non_empty_index(
         f"rag_eval_{fingerprint[:12]}",
         collection_metadata={
             "evaluation_fingerprint": fingerprint,
-            "collection_schema_version": "1",
+            "collection_schema_version": "2",
             "embedding_identity": settings.embedding_model + "@https://embedding.example",
         },
     )
@@ -410,7 +410,7 @@ def test_runtime_uses_shared_container_factory(tmp_path: Path) -> None:
     assert calls[0].collection_name == result.collection_name
     assert calls[0].collection_metadata == {
         "evaluation_fingerprint": result.index_fingerprint,
-        "collection_schema_version": "1",
+        "collection_schema_version": "2",
     }
     assert calls[0].rebuild_collection is True
     assert calls[0].llm_temperature == 0.0

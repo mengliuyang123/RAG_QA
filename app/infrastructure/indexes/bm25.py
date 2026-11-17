@@ -170,4 +170,6 @@ class BM25Index:
             score=score,
             kb_id=chunk.kb_id,
             doc_updated_at=chunk.doc_updated_at,
+            parent_index=chunk.parent_index,
+            heading_path=chunk.heading_path,
         )

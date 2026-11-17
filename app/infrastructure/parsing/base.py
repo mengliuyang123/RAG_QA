@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from app.application.errors import DocumentParsingError
+from app.application.ingestion.markdown_sections import HeadingTracker  # noqa: F401  供各解析器复用
 from app.domain.documents import DocumentSegment
 
 

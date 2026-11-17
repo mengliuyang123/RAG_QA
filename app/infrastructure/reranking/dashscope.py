@@ -10,6 +10,7 @@ from app.application.errors import RerankerUnavailableError
 from app.application.ports.reranking import Reranker
 from app.application.tracing import provider_call
 from app.domain.retrieval import RetrievalResult
+from app.domain.retrieval import result_index_text
 from app.infrastructure.generation.usage import extract_token_usage
 
 
@@ -93,7 +94,7 @@ class RemoteReranker(Reranker):
                     json={
                         "model": self._model,
                         "query": question,
-                        "documents": [candidate.text for candidate in candidates],
+                        "documents": [result_index_text(candidate) for candidate in candidates],
                         "top_n": expected_count,
                     },
                 )

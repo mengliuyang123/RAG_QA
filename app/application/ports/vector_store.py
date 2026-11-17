@@ -38,6 +38,28 @@ class VectorStoreReader(Protocol):
         """
 
 
+class ParentChunkReader(Protocol):
+    """读取父块的全部子块，用于把命中子块扩展为父块上下文。"""
+
+    def read_parent_chunks(
+        self,
+        parents: tuple[tuple[str, int], ...],
+        *,
+        kb_ids: tuple[str, ...] | None = None,
+        excluded_doc_ids: tuple[str, ...] = (),
+    ) -> list[DocumentChunk]:
+        """按 ``(doc_id, parent_index)`` 批量读取子块。
+
+        Args:
+            parents: 要读取的父块身份。
+            kb_ids: 与召回相同的知识库范围；None 兼容全库，空 tuple 不返回结果。
+            excluded_doc_ids: 必须排除的未发布或已过时文档。
+
+        Returns:
+            按 doc_id、chunk_index 排列的子块；范围外或被排除的文档不出现。
+        """
+
+
 class VectorStoreWriter(Protocol):
     """定义入库和补偿所需的向量存储写入能力。"""
 

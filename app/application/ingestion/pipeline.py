@@ -13,7 +13,7 @@ from app.application.ports.embedding import EmbeddingProvider
 from app.application.ports.keyword_index import KeywordIndex
 from app.application.ports.parsing import ParserResolver
 from app.application.ports.vector_store import VectorStoreWriter
-from app.domain.documents import DocumentChunk, DocumentSegment
+from app.domain.documents import DocumentChunk, DocumentSegment, index_text
 
 
 class IngestionPipeline:
@@ -111,7 +111,7 @@ class IngestionPipeline:
                 # 同一次文档版本的所有块使用同一时间，不从可变文件mtime推断。
                 batch = [chunk.model_copy(update={"doc_updated_at": updated_at}) for chunk in batch]
                 embeddings = self._embedder.embed_documents(
-                    [chunk.text for chunk in batch]
+                    [index_text(chunk) for chunk in batch]
                 )
                 self._vector_store.add_chunks(batch, embeddings)
                 chunks_count += len(batch)
