@@ -19,6 +19,7 @@ from pydantic import (
 )
 
 from evaluation.checkpoints import StableErrorCategory
+from evaluation.datasets import LOCAL_RECORD_COUNT, RGB_CASE_COUNT
 
 
 Sha256Digest = str
@@ -320,7 +321,7 @@ class EvaluationReport(BaseModel):
         dataset_hashes: 固定输入及运行清单哈希。
         models: 非敏感模型名和服务 origin。
         configuration: 影响结果的检索、生成与重试参数。
-        local_records: 50 题乘三种策略的结果。
+        local_records: 固定 QA 乘三种策略的结果。
         rgb_records: 固定 RGB 中文子集 150 条结果。
         local_aggregates: 按策略汇总的本地指标。
         rgb_aggregates: 按能力汇总的 RGB 指标。
@@ -358,19 +359,26 @@ class EvaluationReport(BaseModel):
         """
         if self.status != "complete":
             return self
-        if len(self.local_records) != 150:
-            raise ValueError("完整报告必须包含 150 条本地记录")
-        if len(self.rgb_records) != 150:
-            raise ValueError("完整报告必须包含 150 条 RGB 记录")
+        if len(self.local_records) != LOCAL_RECORD_COUNT:
+            raise ValueError(f"完整报告必须包含 {LOCAL_RECORD_COUNT} 条本地记录")
+        if len(self.rgb_records) != RGB_CASE_COUNT:
+            raise ValueError(f"完整报告必须包含 {RGB_CASE_COUNT} 条 RGB 记录")
         if not all(record.status == "success" for record in self.local_records):
             raise ValueError("完整报告的本地记录必须全部成功")
-        if not all(record.status == "success" for record in self.rgb_records):
-            raise ValueError("完整报告的 RGB 记录必须全部成功")
+        if not all(_rgb_record_settled(record) for record in self.rgb_records):
+            raise ValueError("完整报告的 RGB 记录只允许因内容审核被拒而失败")
         local_keys = {record.key for record in self.local_records}
         rgb_keys = {record.key for record in self.rgb_records}
-        if len(local_keys) != 150 or len(rgb_keys) != 150:
+        if len(local_keys) != LOCAL_RECORD_COUNT or len(rgb_keys) != RGB_CASE_COUNT:
             raise ValueError("完整报告记录 key 必须唯一")
         return self
+
+
+def _rgb_record_settled(record: RGBCaseReport) -> bool:
+    """判断 RGB 记录能否进入完整报告：成功，或被上游内容审核拒绝。"""
+    if record.status == "success":
+        return True
+    return record.error_category == StableErrorCategory.CONTENT_FILTERED
 
 
 def publish_report(report: EvaluationReport, results_root: Path) -> None:

@@ -69,8 +69,8 @@ class RetrievedChunkTrace(BaseModel):
         rank: 从一开始的检索名次。
         chunk_id: 文本块唯一标识。
         doc_id: 来源文档唯一标识。
-        text: 仅供运行时指标使用的正文，序列化时排除。
-        text_sha256: 正文 UTF-8 字节的 SHA-256。
+        text: 生成模型实际看到的上下文（父块扩展后为父块上下文），仅供运行时指标使用，序列化时排除。
+        text_sha256: 该上下文 UTF-8 字节的 SHA-256。
         filename: 来源文件名。
         page: 来源页码；非分页文档为 ``None``。
         chunk_index: 文本块在来源文档中的零基序号。

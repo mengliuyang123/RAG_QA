@@ -31,6 +31,10 @@ from evaluation.checkpoints import (
     run_with_retry,
 )
 from evaluation.datasets import (
+    CORPUS_DOCUMENT_COUNT,
+    LOCAL_RECORD_COUNT,
+    QA_CASE_COUNT,
+    RGB_CASE_COUNT,
     load_corpus,
     load_qa_dataset,
     load_rgb_manifest,
@@ -87,7 +91,7 @@ class EvaluationOptions(BaseModel):
         rgb_cache_root: RGB 固定上游文件缓存目录。
         corpus_root: 固定语料正文目录。
         corpus_manifest_path: 固定语料清单路径。
-        qa_dataset_path: 固定 50 题 QA 路径。
+        qa_dataset_path: 固定 QA 路径。
         rgb_manifest_path: RGB 固定子集清单路径。
         local_case_limit: 仅供测试缩减本地题目数。
         strategies: 本次执行的检索策略。
@@ -306,7 +310,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--full",
         action="store_true",
         required=True,
-        help="执行固定 15 文档、50 QA、三策略和 150 RGB case",
+        help=f"执行固定 {CORPUS_DOCUMENT_COUNT} 文档、{QA_CASE_COUNT} QA、三策略和 {RGB_CASE_COUNT} RGB case",
     )
     parser.add_argument("--resume", metavar="RUN_ID")
     parser.add_argument("--rebuild-index", action="store_true")
@@ -665,13 +669,25 @@ def _evaluate_rgb_cases(
             continue
         saved_generation = existing.get(generation_key)
         if saved_generation is None:
-            generation = _generate_rgb_case(
-                case,
-                generation_key,
-                answerer,
-                checkpoint,
-                retry_policy,
-            )
+            try:
+                generation = _generate_rgb_case(
+                    case,
+                    generation_key,
+                    answerer,
+                    checkpoint,
+                    retry_policy,
+                )
+            except Exception as exc:
+                category = classify_remote_error(exc)
+                if category is not StableErrorCategory.CONTENT_FILTERED:
+                    raise
+                report = _filtered_rgb_report(case, category)
+                checkpoint.append(
+                    CheckpointChannel.RGB,
+                    _RGBScoreRecord(key=score_key, report=report),
+                )
+                reports.append(report)
+                continue
         else:
             generation = _RGBGenerationRecord.model_validate(
                 saved_generation
@@ -712,6 +728,26 @@ def _evaluate_rgb_cases(
             )
             raise
     return reports
+
+
+def _filtered_rgb_report(
+    case: RGBCase,
+    category: StableErrorCategory,
+) -> RGBCaseReport:
+    """为被上游内容审核拒绝的 RGB case 生成已结清的失败记录。
+
+    重试同样的输入只会再次被拒绝，所以记为失败并继续后续 case。
+    检查点里的 ``_RGBScoreRecord`` 仍是 success，表示这一步已结清、恢复时跳过。
+    """
+    return RGBCaseReport(
+        key=_rgb_key(case, None),
+        case_id=case.record_id,
+        capability=case.capability,
+        noise_rate=case.noise_rate,
+        status="failed",
+        passage_hashes=case.passage_hashes,
+        error_category=category,
+    )
 
 
 def _generate_rgb_case(
@@ -853,8 +889,8 @@ def _build_report(
     rgb_records: list[RGBCaseReport],
 ) -> EvaluationReport:
     complete = (
-        len(local_records) == 150
-        and len(rgb_records) == 150
+        len(local_records) == LOCAL_RECORD_COUNT
+        and len(rgb_records) == RGB_CASE_COUNT
         and options.local_case_limit is None
         and options.rgb_case_limit is None
         and options.strategies == DEFAULT_STRATEGIES
@@ -938,7 +974,11 @@ def _rgb_aggregates(
             noise_key = f"noise_robustness:noise_{record.noise_rate:g}"
             grouped.setdefault(noise_key, []).append(record)
     aggregates = {}
-    for capability, values in grouped.items():
+    for capability, all_values in grouped.items():
+        values = [record for record in all_values if record.status == "success"]
+        if not values:
+            aggregates[capability] = {"failed_count": float(len(all_values))}
+            continue
         latencies = [record.latency_ms or 0.0 for record in values]
         latency = summarize_latency(latencies)
         aggregates[capability] = {
@@ -953,6 +993,7 @@ def _rgb_aggregates(
             "latency_mean_ms": latency.mean,
             "latency_p50_ms": latency.p50,
             "latency_p95_ms": latency.p95,
+            "failed_count": float(len(all_values) - len(values)),
         }
     return aggregates
 
@@ -999,7 +1040,7 @@ def _load_corpus(
     return loader(
         options.corpus_root,
         options.corpus_manifest_path,
-        15,
+        CORPUS_DOCUMENT_COUNT,
     )
 
 
@@ -1009,7 +1050,7 @@ def _load_qa(
     corpus: CorpusDataset,
 ) -> list[QACase]:
     loader = dependencies.qa_loader or load_qa_dataset
-    return loader(options.qa_dataset_path, corpus, 50)
+    return loader(options.qa_dataset_path, corpus, QA_CASE_COUNT)
 
 
 def _load_rgb_manifest(

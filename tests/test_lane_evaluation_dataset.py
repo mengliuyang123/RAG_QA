@@ -17,8 +17,8 @@ ROOT = Path(__file__).resolve().parents[1] / "evaluation"
 @pytest.mark.skipif(
     not evaluation_corpus_complete(), reason=CORPUS_MISSING_REASON,
 )
-def test_fixed_dataset_has_grounded_sources_and_thirteen_turn_smoke() -> None:
-    """来源拼错、片段丢失或默认全量执行都会改变人工推导的13轮。
+def test_fixed_dataset_has_grounded_sources_and_smoke_selection() -> None:
+    """来源拼错、片段丢失或默认全量执行都会改变固定的 4 个 episode 与 1 轮 smoke。
     """
     from evaluation.lanes.dataset import load_lane_dataset
     from evaluation.lanes.dataset import select_runs
@@ -26,16 +26,15 @@ def test_fixed_dataset_has_grounded_sources_and_thirteen_turn_smoke() -> None:
     corpus = load_corpus(ROOT / "corpus", ROOT / "corpus_manifest.json")
     dataset = load_lane_dataset(ROOT / "lane_dataset.json", corpus)
     runs = select_runs(dataset, smoke=True)
-    assert len(dataset.episodes) == 10
-    assert len(runs) == 10
-    assert sum(len(episode.turns) for episode, _ in runs) == 13
+    assert len(dataset.episodes) == 4
+    assert len(runs) == 1
+    assert sum(len(episode.turns) for episode, _ in runs) == 1
     chat = [(episode.id, policy) for episode, policy in runs if episode.id == "greeting"]
     assert chat == [("greeting", "auto")]
     tags = set()
     for episode in dataset.episodes:
         tags.update(episode.tags)
-    assert {"single_hop", "multi_hop", "comparison", "aggregation", "multi_turn",
-            "clarification", "retry", "refusal", "chitchat", "meta"} <= tags
+    assert {"chitchat", "clarification", "meta", "refusal"} <= tags
 
 
 

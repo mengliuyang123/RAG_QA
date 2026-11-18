@@ -5,10 +5,11 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from openai import APITimeoutError, AuthenticationError, RateLimitError
+from openai import APITimeoutError, AuthenticationError, BadRequestError, RateLimitError
 
 from app.application.errors import (
     LLMAuthenticationError,
+    LLMContentFilteredError,
     LLMGenerationError,
     LLMMissingAPIKeyError,
     LLMRateLimitError,
@@ -122,6 +123,53 @@ def test_llm_provider_rejects_incomplete_generation(finish_reason: str) -> None:
     provider = OpenAICompatibleLLMProvider(client=client)
     with pytest.raises(LLMGenerationError):
         provider.generate([{"role": "user", "content": "问题"}])
+
+
+def test_llm_provider_marks_filtered_answer_as_content_filtered() -> None:
+    """上游声明回答被内容审核过滤时应抛出可区分的内容审核异常。"""
+    client = FakeOpenAIClient("被过滤的回答")
+    client.completions.finish_reason = "content_filter"
+    provider = OpenAICompatibleLLMProvider(client=client)
+    with pytest.raises(LLMContentFilteredError):
+        provider.generate([{"role": "user", "content": "问题"}])
+
+
+def _bad_request(code: str) -> BadRequestError:
+    return BadRequestError(
+        "bad request",
+        response=httpx.Response(
+            400, request=httpx.Request("POST", "http://llm.test"),
+        ),
+        body={"code": code, "message": "rejected"},
+    )
+
+
+@pytest.mark.parametrize("code", ["data_inspection_failed", "content_filter"])
+def test_llm_provider_maps_moderation_rejection_to_content_filtered(
+    code: str,
+) -> None:
+    """请求被上游内容审核拒绝时应抛出内容审核异常并保留异常链。"""
+    client = FakeOpenAIClient()
+    upstream_error = _bad_request(code)
+    client.completions.error = upstream_error
+    provider = OpenAICompatibleLLMProvider(client=client)
+
+    with pytest.raises(LLMContentFilteredError) as exc_info:
+        provider.generate([{"role": "user", "content": "问题"}])
+
+    assert exc_info.value.__cause__ is upstream_error
+
+
+def test_llm_provider_keeps_other_bad_requests_as_generation_errors() -> None:
+    """其他 400 错误不能被误判为内容审核拒绝。"""
+    client = FakeOpenAIClient()
+    client.completions.error = _bad_request("invalid_parameter")
+    provider = OpenAICompatibleLLMProvider(client=client)
+
+    with pytest.raises(LLMGenerationError) as exc_info:
+        provider.generate([{"role": "user", "content": "问题"}])
+
+    assert not isinstance(exc_info.value, LLMContentFilteredError)
 
 
 def test_llm_provider_rejects_refusal_with_nonempty_content() -> None:

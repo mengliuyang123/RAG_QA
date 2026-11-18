@@ -1,0 +1,2 @@
+# 评估语料按 sha256 校验，任何平台检出都必须保持 LF，不做换行转换。
+evaluation/corpus/** text eol=lf

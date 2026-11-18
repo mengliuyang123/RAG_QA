@@ -453,3 +453,21 @@ def test_pipeline_close_releases_retriever_resources() -> None:
     pipeline.close()
 
     assert retriever.closed is True
+
+
+def test_evaluate_query_trace_uses_the_context_the_model_saw() -> None:
+    """有父块上下文时，评估追踪记录交给模型的上下文，供 RAGAS 等指标核对。"""
+    parent = make_result(0).model_copy(update={"context": "文件名：a\n内容：\n父块全文"})
+    pipeline = QueryService(
+        retriever=FakeRetriever([parent, make_result(1)]),
+        answer_generator=SpyAnswerGenerator("答案[1]"),
+        clock=SequenceClock(1.0, 1.0, 1.0),
+    )
+
+    response = pipeline.evaluate_query("问题", strategy=RetrievalStrategy.HYBRID, top_k=2)
+
+    assert response.retrieved[0].text == "文件名：a\n内容：\n父块全文"
+    assert response.retrieved[0].text_sha256 == hashlib.sha256(
+        "文件名：a\n内容：\n父块全文".encode("utf-8")
+    ).hexdigest()
+    assert response.retrieved[1].text == "文本块 1"

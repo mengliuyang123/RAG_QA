@@ -15,6 +15,7 @@ from app.bootstrap.container import RuntimeOptions
 from app.bootstrap.container import build_application_container
 from evaluation.reporting import EvaluationReport
 from evaluation.reporting import publish_report
+from evaluation.datasets import LOCAL_RECORD_COUNT, RGB_CASE_COUNT
 from tests.evaluation.test_reporting import _report
 from tests.test_shares_api import _client
 from tests.test_ingestion_job_container import _settings
@@ -46,7 +47,7 @@ async def test_latest_uses_real_publication_and_matching_schema(
             empty = await admin.get(endpoint)
             assert empty.status_code == 404
             assert empty.json()["error"]["code"] == "no_evaluation"
-            report = _report("complete", 150, 150)
+            report = _report("complete", LOCAL_RECORD_COUNT, RGB_CASE_COUNT)
             publish_report(report, results)
             response = await admin.get(endpoint)
             assert response.status_code == 200
@@ -131,7 +132,7 @@ def test_evaluation_reader_never_falls_back_to_production_in_runtime(
         explicit: 是否显式指定运行专属目录。
     """
     production = tmp_path / "published"
-    report = _report("complete", 150, 150)
+    report = _report("complete", LOCAL_RECORD_COUNT, RGB_CASE_COUNT)
     publish_report(report, production)
     settings = _settings(tmp_path).model_copy(update={
         "evaluation_results_path": production,

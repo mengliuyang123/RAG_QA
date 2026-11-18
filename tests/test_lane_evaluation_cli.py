@@ -58,8 +58,8 @@ def test_dry_run_uses_env_settings_without_network_or_storage(
     assert cli.main(["--dry-run", "--work-root", str(work)], settings=settings) == 0
     output = capsys.readouterr().out
     payload = json.loads(output)
-    assert payload["planned_turns"] == 13
-    assert payload["planned_episodes"] == 10
+    assert payload["planned_turns"] == 1
+    assert payload["planned_episodes"] == 1
     assert payload["strategy"] == "hybrid"
     assert payload["purpose"] == "connectivity_smoke"
     assert "generator-secret" not in output
@@ -74,7 +74,7 @@ def test_dry_run_uses_env_settings_without_network_or_storage(
 def test_full_offline_entry_isolated_and_rescore_does_not_open_index(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """真实13轮组合的CLI接线不能碰生产库，续跑评分不能重新准备索引。
+    """全部固定片段的CLI接线不能碰生产库，续跑评分不能重新准备索引。
 
     Args:
         tmp_path: 临时的生产哨兵路径和独立评估数据。
@@ -143,18 +143,18 @@ def test_full_offline_entry_isolated_and_rescore_does_not_open_index(
         evaluation_artifacts_path=tmp_path / "evaluation/chroma",
     )
     work = tmp_path / "work"
-    assert cli.main(["--work-root", str(work)], settings=settings) == 0
+    assert cli.main(["--full", "--work-root", str(work)], settings=settings) == 0
     reports = list(work.rglob("report.json"))
     assert len(reports) == 1
     report = json.loads(reports[0].read_text(encoding="utf-8"))
-    assert report["generated_turns"] == report["scored_turns"] == 13
+    assert report["generated_turns"] == report["scored_turns"] == 6
     assert report["status"] == "complete"
+    # 现有 4 个片段都没有“检索后作答”的轮次，不会写来源文件，所以不再断言评估产物目录存在。
     assert not production.exists()
-    assert settings.evaluation_artifacts_path.exists()
 
     def forbidden(*args: object, **kwargs: object) -> None:
         raise AssertionError("评分或完全复用不能打开或重新向量化索引")
 
     monkeypatch.setattr(cli, "build_evaluation_runtime", forbidden)
-    assert cli.main(["--work-root", str(work), "--phase", "score"], settings=settings) == 0
+    assert cli.main(["--full", "--work-root", str(work), "--phase", "score"], settings=settings) == 0
     assert not production.exists()

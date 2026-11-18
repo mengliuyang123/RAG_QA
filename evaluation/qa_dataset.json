@@ -1,45 +1,10 @@
 [
   {
-    "id": "local-001",
-    "question": "LangChain 的语义搜索知识库教程包含哪些主要步骤？",
-    "reference_answer": "主要步骤是创建 Document、加载并切分文档、生成嵌入、把文本块写入向量存储、按相似度查询，并可把检索结果交给 LLM 形成 RAG。",
-    "expected_sources": [{"filename": "langchain_knowledge_base.md", "page": null}],
-    "tags": ["definition", "single-document", "langchain"]
-  },
-  {
-    "id": "local-002",
-    "question": "LangChain 快速开始中，一个基本 Agent 由什么构成？",
-    "reference_answer": "基本 Agent 通过 create_agent 组合聊天模型、可调用工具和系统提示词，再使用消息调用 Agent。",
-    "expected_sources": [{"filename": "langchain_quickstart.md", "page": null}],
-    "tags": ["definition", "single-document", "langchain"]
-  },
-  {
     "id": "local-003",
     "question": "Retrieval 为什么能缓解大语言模型的有限上下文和静态知识问题？",
     "reference_answer": "Retrieval 在查询时获取相关外部知识，使模型不必一次吞下全部语料，也能使用训练截止时间之后或特定领域的上下文。",
     "expected_sources": [{"filename": "langchain_retrieval.md", "page": null}],
     "tags": ["definition", "single-document", "langchain"]
-  },
-  {
-    "id": "local-004",
-    "question": "LangGraph Agentic RAG 与固定检索流程的核心区别是什么？",
-    "reference_answer": "Agentic RAG 让 Agent 根据当前问题决定是否调用检索工具，并可对检索结果评分、改写问题后再次检索，而不是固定只检索一次。",
-    "expected_sources": [{"filename": "langgraph_agentic_rag.md", "page": null}],
-    "tags": ["definition", "single-document", "langgraph"]
-  },
-  {
-    "id": "local-005",
-    "question": "LangGraph persistence 中 checkpointer 和 store 分别负责什么？",
-    "reference_answer": "Checkpointer 保存线程范围的图状态和检查点，用于短期记忆、恢复和时间旅行；store 保存图状态之外、可跨线程使用的长期数据。",
-    "expected_sources": [{"filename": "langgraph_persistence.md", "page": null}],
-    "tags": ["definition", "single-document", "langgraph"]
-  },
-  {
-    "id": "local-006",
-    "question": "LangGraph 快速开始中的 Graph API 用哪些基本元素构建计算器 Agent？",
-    "reference_answer": "它定义工具和模型、共享状态、模型节点与工具节点，再用普通边和条件边连接节点，最后编译并调用图。",
-    "expected_sources": [{"filename": "langgraph_quickstart.md", "page": null}],
-    "tags": ["definition", "single-document", "langgraph"]
   },
   {
     "id": "local-007",
@@ -105,46 +70,11 @@
     "tags": ["definition", "single-document", "langgraph"]
   },
   {
-    "id": "local-016",
-    "question": "LangChain 语义搜索教程为什么要先切分长文档再生成嵌入？",
-    "reference_answer": "切分让每个片段能单独被检索并适配模型上下文窗口，随后为片段生成嵌入，才能在向量空间中按语义相似度查找相关内容。",
-    "expected_sources": [{"filename": "langchain_knowledge_base.md", "page": null}],
-    "tags": ["procedure", "single-document", "langchain"]
-  },
-  {
-    "id": "local-017",
-    "question": "在 LangChain 快速开始中，怎样把普通 Python 函数提供给 Agent 使用？",
-    "reference_answer": "先把带有清晰名称、类型注解和说明的 Python 函数定义为工具，再把该工具放入 create_agent 的 tools 参数。",
-    "expected_sources": [{"filename": "langchain_quickstart.md", "page": null}],
-    "tags": ["procedure", "single-document", "langchain"]
-  },
-  {
     "id": "local-018",
     "question": "已有 SQL 或 CRM 知识库时，LangChain retrieval 文档建议如何接入 RAG？",
     "reference_answer": "无需重建知识库；可以把它作为 Agentic RAG 的工具，或者先查询它并把返回内容作为 2-Step RAG 的模型上下文。",
     "expected_sources": [{"filename": "langchain_retrieval.md", "page": null}],
     "tags": ["procedure", "single-document", "langchain"]
-  },
-  {
-    "id": "local-019",
-    "question": "LangGraph Agentic RAG 如何处理低相关性的检索结果？",
-    "reference_answer": "图会对检索文档评分；如果相关性不足，就改写原问题以改善检索，再返回检索步骤，而不是直接生成答案。",
-    "expected_sources": [{"filename": "langgraph_agentic_rag.md", "page": null}],
-    "tags": ["procedure", "single-document", "langgraph"]
-  },
-  {
-    "id": "local-020",
-    "question": "要让 LangGraph 状态在进程重启后仍可恢复，应怎样选择 checkpointer？",
-    "reference_answer": "生产环境应使用由数据库支持的持久化 checkpointer，而不是只存在内存中的 MemorySaver，并通过 thread_id 定位线程状态。",
-    "expected_sources": [{"filename": "langgraph_persistence.md", "page": null}],
-    "tags": ["configuration", "single-document", "langgraph"]
-  },
-  {
-    "id": "local-021",
-    "question": "LangGraph 计算器 Agent 如何决定调用工具还是结束？",
-    "reference_answer": "模型节点生成消息后，条件边检查最后一条消息是否包含工具调用；有工具调用就路由到工具节点，否则路由到 END。",
-    "expected_sources": [{"filename": "langgraph_quickstart.md", "page": null}],
-    "tags": ["procedure", "single-document", "langgraph"]
   },
   {
     "id": "local-022",
@@ -210,46 +140,11 @@
     "tags": ["configuration", "single-document", "langgraph"]
   },
   {
-    "id": "local-031",
-    "question": "LangChain 的 vector store 和 retriever 在语义搜索中分别承担什么职责？",
-    "reference_answer": "Vector store 保存并搜索文本嵌入；retriever 提供统一接口，根据非结构化查询返回相关 Document，可隐藏具体向量存储实现。",
-    "expected_sources": [{"filename": "langchain_knowledge_base.md", "page": null}],
-    "tags": ["definition", "single-document", "langchain"]
-  },
-  {
-    "id": "local-032",
-    "question": "LangChain 快速开始为什么强调为工具编写清晰文档字符串？",
-    "reference_answer": "工具名称和说明会帮助模型理解工具用途、参数和何时调用；描述不清会降低 Agent 选择和使用工具的可靠性。",
-    "expected_sources": [{"filename": "langchain_quickstart.md", "page": null}],
-    "tags": ["procedure", "single-document", "langchain"]
-  },
-  {
     "id": "local-033",
     "question": "2-Step RAG、Agentic RAG 和 Hybrid RAG 在控制、灵活性和延迟上有何区别？",
     "reference_answer": "2-Step RAG 控制高、流程可预测且延迟较低但灵活性低；Agentic RAG 由 Agent 决定检索，灵活性高但控制和延迟可预测性较低；Hybrid 通过验证步骤折中两者。",
     "expected_sources": [{"filename": "langchain_retrieval.md", "page": null}],
     "tags": ["comparison", "single-document", "langchain"]
-  },
-  {
-    "id": "local-034",
-    "question": "LangGraph Agentic RAG 图中的文档评分节点如何影响后续路径？",
-    "reference_answer": "评分结果决定直接进入答案生成，还是先进入问题改写并重新检索，因此它是检索质量控制的条件路由依据。",
-    "expected_sources": [{"filename": "langgraph_agentic_rag.md", "page": null}],
-    "tags": ["procedure", "single-document", "langgraph"]
-  },
-  {
-    "id": "local-035",
-    "question": "为什么 MemorySaver 不适合需要跨重启恢复的 LangGraph 生产应用？",
-    "reference_answer": "MemorySaver 的检查点只保存在当前进程内存中，进程结束就丢失；跨重启恢复需要数据库支持的持久化 saver。",
-    "expected_sources": [{"filename": "langgraph_persistence.md", "page": null}],
-    "tags": ["configuration", "single-document", "langgraph"]
-  },
-  {
-    "id": "local-036",
-    "question": "LangGraph 快速开始中，模型节点和工具节点如何形成循环？",
-    "reference_answer": "模型节点可能产生工具调用，条件边把执行路由到工具节点；工具结果作为消息写回状态后再回到模型节点，直到模型不再调用工具。",
-    "expected_sources": [{"filename": "langgraph_quickstart.md", "page": null}],
-    "tags": ["procedure", "single-document", "langgraph"]
   },
   {
     "id": "local-037",
@@ -280,16 +175,6 @@
     "tags": ["procedure", "single-document", "langchain"]
   },
   {
-    "id": "local-041",
-    "question": "LangChain short-term memory 与 LangGraph persistence 的 checkpointer 有什么关系？",
-    "reference_answer": "LangChain Agent 的线程短期记忆依靠 checkpointer 保存状态；LangGraph persistence 定义的 checkpointer 正是保存线程图状态和检查点、支持恢复的机制。",
-    "expected_sources": [
-      {"filename": "langchain_short_term_memory.md", "page": null},
-      {"filename": "langgraph_persistence.md", "page": null}
-    ],
-    "tags": ["comparison", "multi-document", "langchain", "langgraph"]
-  },
-  {
     "id": "local-042",
     "question": "LangChain streaming 与 LangGraph streaming 的关注层次有何不同？",
     "reference_answer": "LangChain streaming 面向 Agent 应用的进度、模型 token 和自定义更新；LangGraph streaming 更贴近图运行时，可流出状态、节点任务、检查点、调试信息和子图事件。",
@@ -308,48 +193,6 @@
       {"filename": "langchain_multi_agent.md", "page": null}
     ],
     "tags": ["comparison", "multi-document", "langchain"]
-  },
-  {
-    "id": "local-044",
-    "question": "LangGraph 快速开始如何具体使用 Graph API 的 State、Node 和 Edge 概念？",
-    "reference_answer": "快速开始用消息状态保存对话，把模型调用和工具执行写成节点，再用普通边和条件边连接 START、模型、工具与 END，最终编译 StateGraph。",
-    "expected_sources": [
-      {"filename": "langgraph_quickstart.md", "page": null},
-      {"filename": "langgraph_graph_api.md", "page": null}
-    ],
-    "tags": ["synthesis", "multi-document", "langgraph"]
-  },
-  {
-    "id": "local-045",
-    "question": "2-Step RAG 与 LangGraph Agentic RAG 的检索决策流程有何差别？",
-    "reference_answer": "2-Step RAG 总是在生成前执行一次固定检索；LangGraph Agentic RAG 由模型决定是否检索，并能根据文档评分改写问题、循环检索后再回答。",
-    "expected_sources": [
-      {"filename": "langchain_retrieval.md", "page": null},
-      {"filename": "langgraph_agentic_rag.md", "page": null}
-    ],
-    "tags": ["comparison", "multi-document", "langchain", "langgraph"]
-  },
-  {
-    "id": "local-046",
-    "question": "从原始文档到可自主检索的 RAG Agent，需要组合哪些能力？",
-    "reference_answer": "先用 loader、splitter、embedding 和 vector store 建立可检索知识库，再提供 retriever 接口；若需要自主决策，则把检索包装为工具交给 Agent，并加入文档评分、问题改写和生成路径。",
-    "expected_sources": [
-      {"filename": "langchain_knowledge_base.md", "page": null},
-      {"filename": "langchain_retrieval.md", "page": null},
-      {"filename": "langgraph_agentic_rag.md", "page": null}
-    ],
-    "tags": ["synthesis", "multi-document", "langchain", "langgraph"]
-  },
-  {
-    "id": "local-047",
-    "question": "如何让一个 LangChain Agent 同时拥有可扩展状态、线程短期记忆和跨线程长期数据？",
-    "reference_answer": "通过 AgentState 扩展自定义字段，用 checkpointer 保存每个 thread_id 的消息与图状态实现短期记忆，再用 LangGraph store 保存图状态之外、可跨线程读取的长期数据。",
-    "expected_sources": [
-      {"filename": "langchain_agents.md", "page": null},
-      {"filename": "langchain_short_term_memory.md", "page": null},
-      {"filename": "langgraph_persistence.md", "page": null}
-    ],
-    "tags": ["synthesis", "multi-document", "langchain", "langgraph"]
   },
   {
     "id": "local-048",
@@ -371,16 +214,5 @@
       {"filename": "langchain_structured_output.md", "page": null}
     ],
     "tags": ["synthesis", "multi-document", "langchain"]
-  },
-  {
-    "id": "local-050",
-    "question": "部署一个需要人工审批且可恢复的 LangGraph 应用，需要哪些结构和持久化配置？",
-    "reference_answer": "应用需要图代码、依赖声明和 langgraph.json；图应配置持久化 checkpointer，用 thread_id 定位状态，在审批节点调用 interrupt，并用相同 thread_id 与 Command(resume=...) 恢复。生产环境变量应由部署环境安全提供。",
-    "expected_sources": [
-      {"filename": "langgraph_application_structure.md", "page": null},
-      {"filename": "langgraph_interrupts.md", "page": null},
-      {"filename": "langgraph_persistence.md", "page": null}
-    ],
-    "tags": ["synthesis", "multi-document", "langgraph"]
   }
 ]

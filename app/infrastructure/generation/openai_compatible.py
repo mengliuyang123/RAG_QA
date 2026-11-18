@@ -9,10 +9,12 @@ from typing import Literal
 
 from openai import APITimeoutError
 from openai import AuthenticationError
+from openai import BadRequestError
 from openai import OpenAI
 from openai import RateLimitError
 
 from app.application.errors import LLMAuthenticationError
+from app.application.errors import LLMContentFilteredError
 from app.application.errors import LLMError
 from app.application.errors import LLMGenerationError
 from app.application.errors import LLMMissingAPIKeyError
@@ -23,6 +25,9 @@ from app.infrastructure.generation.usage import extract_token_usage
 
 
 logger = logging.getLogger(__name__)
+
+# 上游内容审核拒绝请求时的错误码：OpenAI 为 content_filter，DashScope 为 data_inspection_failed。
+_CONTENT_FILTER_CODES = frozenset({"content_filter", "data_inspection_failed"})
 
 
 class OpenAICompatibleLLMProvider:
@@ -129,12 +134,20 @@ class OpenAICompatibleLLMProvider:
             raise LLMAuthenticationError(
                 "语言模型服务认证失败"
             ) from exc
+        except BadRequestError as exc:
+            if getattr(exc, "code", None) in _CONTENT_FILTER_CODES:
+                raise LLMContentFilteredError(
+                    "语言模型服务的内容审核拒绝了本次请求"
+                ) from exc
+            raise LLMGenerationError("语言模型调用失败") from exc
         except Exception as exc:
             raise LLMGenerationError("语言模型调用失败") from exc
 
         try:
             finish_reason = getattr(response.choices[0], "finish_reason", None)
-            if finish_reason in {"length", "content_filter"}:
+            if finish_reason == "content_filter":
+                raise LLMContentFilteredError("语言模型回答被内容审核过滤")
+            if finish_reason == "length":
                 raise LLMGenerationError("语言模型回答被截断或过滤")
             if getattr(response.choices[0].message, "refusal", None):
                 raise LLMGenerationError("语言模型拒绝了本次生成请求")

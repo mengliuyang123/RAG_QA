@@ -49,7 +49,7 @@ def test_actual_manifest_changes_for_models_dirty_code_and_judge_not_keys(
 
     first = manifest(settings)
     assert first.strategy.value == "hybrid"
-    assert len(first.selections) == 10
+    assert len(first.selections) == 1
     changed_key = manifest(settings.model_copy(update={
         "llm_api_key": "rotated", "evaluation_judge_api_key": "rotated-judge",
         "embedding_api_key": "rotated-embed",

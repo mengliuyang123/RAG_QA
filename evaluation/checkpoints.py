@@ -23,6 +23,7 @@ from app.application.errors import (
     EmbeddingResponseError,
     EmbeddingTimeoutError,
     LLMAuthenticationError,
+    LLMContentFilteredError,
     LLMGenerationError,
     LLMMissingAPIKeyError,
     LLMRateLimitError,
@@ -52,6 +53,7 @@ class StableErrorCategory(StrEnum):
     CONFIGURATION = "configuration"
     INVALID_DATA = "invalid_data"
     INVALID_RESPONSE = "invalid_response"
+    CONTENT_FILTERED = "content_filtered"
     UNKNOWN = "unknown"
 
 
@@ -393,6 +395,8 @@ def classify_remote_error(error: Exception) -> StableErrorCategory:
         (EmbeddingResponseError, InvalidRemoteResponseError),
     ):
         return StableErrorCategory.INVALID_RESPONSE
+    if isinstance(error, LLMContentFilteredError):
+        return StableErrorCategory.CONTENT_FILTERED
     if isinstance(error, (LLMGenerationError, EmbeddingError)):
         return StableErrorCategory.INVALID_RESPONSE
     if isinstance(error, RerankerUnavailableError):

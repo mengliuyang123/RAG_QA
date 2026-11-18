@@ -16,6 +16,14 @@ from evaluation.models import (
 )
 
 
+# 固定评估集规模。原 15 篇语料中有 5 篇的源文件已无法找回，评估集缩为 10 篇语料、
+# 依赖这 5 篇的 21 题一并移除后剩 29 题；本地记录数 = 题数 × 3 种检索策略。
+CORPUS_DOCUMENT_COUNT = 10
+QA_CASE_COUNT = 29
+LOCAL_RECORD_COUNT = QA_CASE_COUNT * 3
+RGB_CASE_COUNT = 150
+
+
 class DatasetValidationError(ValueError):
     """评估数据缺失、损坏或不符合固定协议时抛出。"""
 
@@ -48,7 +56,7 @@ def sha256_file(path: Path) -> str:
 def load_corpus(
     root: Path,
     manifest_path: Path,
-    expected_count: int = 15,
+    expected_count: int = CORPUS_DOCUMENT_COUNT,
 ) -> CorpusDataset:
     """加载经过来源、数量和哈希校验的固定语料。
 
@@ -108,7 +116,7 @@ def load_corpus(
 def load_qa_dataset(
     path: Path,
     corpus: CorpusDataset,
-    expected_count: int = 50,
+    expected_count: int = QA_CASE_COUNT,
 ) -> list[QACase]:
     """加载与固定 corpus 一致的人工 QA 标注。
 

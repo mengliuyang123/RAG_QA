@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from evaluation.datasets import LOCAL_RECORD_COUNT, RGB_CASE_COUNT
+
 
 def _report(status: str, local_count: int, rgb_count: int):
     from evaluation.reporting import (
@@ -189,7 +191,7 @@ def test_complete_report_archives_and_atomically_replaces_latest(
 
     monkeypatch.setattr(reporting.os, "replace", recording_replace)
 
-    reporting.publish_report(_report("complete", 150, 150), tmp_path)
+    reporting.publish_report(_report("complete", LOCAL_RECORD_COUNT, RGB_CASE_COUNT), tmp_path)
 
     latest_json = (tmp_path / "latest.json").read_text(encoding="utf-8")
     latest_markdown = (tmp_path / "latest.md").read_text(encoding="utf-8")
@@ -198,6 +200,64 @@ def test_complete_report_archives_and_atomically_replaces_latest(
     assert len(replacements) == 4
     assert (tmp_path / "runs" / "20260820T120000Z-deadbeef.json").is_file()
     assert (tmp_path / "runs" / "20260820T120000Z-deadbeef.md").is_file()
+
+
+def _with_failed_rgb_record(report, error_category: str):
+    from evaluation.reporting import RGBCaseReport
+
+    failed = RGBCaseReport(
+        key="rgb-000",
+        case_id=0,
+        capability="noise_robustness",
+        noise_rate=0.4,
+        status="failed",
+        passage_hashes=["a" * 64] * 5,
+        error_category=error_category,
+    )
+    return report.model_copy(
+        update={"rgb_records": [failed, *report.rgb_records[1:]]}
+    )
+
+
+def test_complete_report_accepts_content_filtered_rgb_failure(
+    tmp_path: Path,
+) -> None:
+    """上游内容审核拒绝的 RGB case 记为失败后仍可发布完整报告。
+
+    Args:
+        tmp_path: pytest 临时目录。
+    """
+    from evaluation import reporting
+
+    report = _with_failed_rgb_record(
+        _report("complete", LOCAL_RECORD_COUNT, RGB_CASE_COUNT),
+        "content_filtered",
+    )
+
+    reporting.publish_report(report, tmp_path)
+
+    assert '"status": "complete"' in (tmp_path / "latest.json").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_complete_report_rejects_other_rgb_failures(tmp_path: Path) -> None:
+    """除内容审核外的 RGB 失败仍不得进入完整报告。
+
+    Args:
+        tmp_path: pytest 临时目录。
+    """
+    from evaluation import reporting
+
+    report = _with_failed_rgb_record(
+        _report("complete", LOCAL_RECORD_COUNT, RGB_CASE_COUNT),
+        "invalid_response",
+    )
+
+    with pytest.raises(ValueError):
+        reporting.publish_report(report, tmp_path)
+
+    assert not (tmp_path / "latest.json").exists()
 
 
 @pytest.mark.parametrize(
@@ -228,7 +288,7 @@ def test_readme_metrics_rejects_missing_duplicate_or_reversed_markers(
     with pytest.raises(ValueError, match="README 指标标记"):
         update_readme_metrics(
             readme_path,
-            _report("complete", 150, 150),
+            _report("complete", LOCAL_RECORD_COUNT, RGB_CASE_COUNT),
         )
 
 
@@ -286,7 +346,7 @@ def test_readme_metrics_atomically_updates_only_controlled_block(
         real_replace(source_path, target_path)
 
     monkeypatch.setattr(reporting.os, "replace", recording_replace)
-    report = _report("complete", 150, 150)
+    report = _report("complete", LOCAL_RECORD_COUNT, RGB_CASE_COUNT)
 
     reporting.update_readme_metrics(readme_path, report)
     first = readme_path.read_text(encoding="utf-8")

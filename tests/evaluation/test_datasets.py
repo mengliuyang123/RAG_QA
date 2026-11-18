@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+from evaluation.datasets import CORPUS_DOCUMENT_COUNT, QA_CASE_COUNT
 from tests.corpus_state import CORPUS_MISSING_REASON
 from tests.corpus_state import evaluation_corpus_complete
 
@@ -341,7 +342,7 @@ def test_committed_evaluation_datasets_are_valid() -> None:
         evaluation_root / "rgb_manifest.json"
     )
 
-    assert len(corpus.entries) == 15
-    assert len(qa_cases) == 50
+    assert len(corpus.entries) == CORPUS_DOCUMENT_COUNT == 10
+    assert len(qa_cases) == QA_CASE_COUNT == 29
     assert len(rgb_manifest.zh_refine_ids) == 30
     assert len(rgb_manifest.zh_int_ids) == 30

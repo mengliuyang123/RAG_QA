@@ -170,6 +170,10 @@ class LLMGenerationError(LLMError):
     """表示语言模型响应无法生成有效答案。"""
 
 
+class LLMContentFilteredError(LLMGenerationError):
+    """表示语言模型服务的内容审核拒绝了请求或回答。"""
+
+
 class RerankerUnavailableError(RuntimeError):
     """表示远程重排服务缺少配置、调用失败或响应无效。"""
 

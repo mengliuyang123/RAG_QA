@@ -13,6 +13,7 @@ from app.domain.answers import Citation
 from app.domain.answers import EvaluationQueryResult
 from app.domain.answers import RetrievedChunkTrace
 from app.domain.retrieval import RetrievalStrategy
+from evaluation.checkpoints import CheckpointChannel
 from evaluation.judge import JudgeScore
 from evaluation.ragas_eval import RagasScores
 from evaluation.rgb import RGBCase
@@ -598,3 +599,68 @@ def test_cli_prints_run_id_and_resume_command_before_evaluation(
     assert received[0].run_id is not None
     assert f"Run ID: {received[0].run_id}" in output
     assert f"--resume {received[0].run_id}" in output
+
+
+def test_rgb_content_filtered_case_is_recorded_and_skipped_on_resume(
+    tmp_path: Path,
+) -> None:
+    """内容审核拒绝的 RGB case 记为失败后继续，恢复时不再重新生成。
+
+    Args:
+        tmp_path: 检查点使用的临时目录。
+    """
+    from app.application.errors import LLMContentFilteredError
+    from evaluation.checkpoints import RetryPolicy
+    from evaluation.checkpoints import RunCheckpoint
+    from evaluation.run_eval import _evaluate_rgb_cases
+    from evaluation.run_eval import _rgb_aggregates
+
+    cases = _rgb_cases()
+    filtered_key = cases[1].key
+
+    class FilteringRGBAnswerer(_FakeRGBAnswerer):
+        """对指定 case 模拟上游内容审核拒绝。"""
+
+        def generate(self, case: RGBCase) -> str:
+            """被过滤的 case 抛出内容审核异常，其余返回固定回答。
+
+            Args:
+                case: 当前 RGB case。
+
+            Returns:
+                固定回答。
+            """
+            if case.key == filtered_key:
+                self.calls += 1
+                raise LLMContentFilteredError("rejected")
+            return super().generate(case)
+
+    checkpoint = RunCheckpoint.create(tmp_path, "run-001", {"model": "a"})
+    policy = RetryPolicy(sleeper=lambda _delay: None)
+    answerer = FilteringRGBAnswerer()
+
+    reports = _evaluate_rgb_cases(
+        cases, answerer, _FakeJudge(), checkpoint, policy, {},
+    )
+
+    assert [report.status for report in reports] == [
+        "success", "failed", "success", "success",
+    ]
+    assert reports[1].error_category == "content_filtered"
+    assert reports[1].official_correct is None
+    noise = _rgb_aggregates(reports)["noise_robustness"]
+    assert noise["failed_count"] == 1.0
+    assert noise["official_accuracy"] == 1.0
+
+    resumed_answerer = FilteringRGBAnswerer()
+    resumed = _evaluate_rgb_cases(
+        cases,
+        resumed_answerer,
+        _FakeJudge(),
+        checkpoint,
+        policy,
+        checkpoint.records(CheckpointChannel.RGB),
+    )
+
+    assert resumed == reports
+    assert resumed_answerer.calls == 0

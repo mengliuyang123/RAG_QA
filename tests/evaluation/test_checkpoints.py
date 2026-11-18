@@ -16,6 +16,7 @@ from app.application.errors import (
     EmbeddingResponseError,
     EmbeddingTimeoutError,
     LLMAuthenticationError,
+    LLMContentFilteredError,
     LLMRateLimitError,
     LLMTimeoutError,
 )
@@ -180,6 +181,10 @@ def test_retry_does_not_repeat_authentication_or_schema_errors() -> None:
         (
             InvalidRemoteResponseError("secret invalid payload"),
             StableErrorCategory.INVALID_RESPONSE,
+        ),
+        (
+            LLMContentFilteredError("secret moderation body"),
+            StableErrorCategory.CONTENT_FILTERED,
         ),
     ]
     for error, expected_category in errors:

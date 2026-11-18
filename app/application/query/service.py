@@ -183,15 +183,18 @@ class QueryService:
         execution = self._execute_query(question, strategy, top_k)
         retrieved: list[RetrievedChunkTrace] = []
         for rank, result in enumerate(execution.results, start=1):
+            # 评估指标（如 RAGAS 忠实度）必须核对生成模型实际看到的上下文：
+            # 有父块扩展时是父块上下文，否则是命中块正文。
+            seen_text = result.context or result.text
             text_sha256 = hashlib.sha256(
-                result.text.encode("utf-8")
+                seen_text.encode("utf-8")
             ).hexdigest()
             retrieved.append(
                 RetrievedChunkTrace(
                     rank=rank,
                     chunk_id=result.chunk_id,
                     doc_id=result.doc_id,
-                    text=result.text,
+                    text=seen_text,
                     text_sha256=text_sha256,
                     filename=result.filename,
                     page=result.page,
